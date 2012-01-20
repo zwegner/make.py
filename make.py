@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
-# make.py
-# Copyright 2011 Matt Craighead
+# make.py (http://code.google.com/p/make-py/)
+# Copyright 2012 Matt Craighead
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
