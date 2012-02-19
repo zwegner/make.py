@@ -60,9 +60,10 @@ def normpath(path):
     return path
 
 def run_cmd(rule):
-    # Always delete the target first
-    if os.path.exists(rule.target):
-        os.unlink(rule.target)
+    # Always delete the targets first
+    for t in rule.targets:
+        if os.path.exists(t):
+            os.unlink(t)
 
     with io_lock:
         p = subprocess.Popen(rule.cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -84,7 +85,8 @@ def run_cmd(rule):
                 new_out.append(line)
         with io_lock:
             with open(rule.d_file, 'wt') as f:
-                f.write('%s: \\\n' % rule.target)
+                assert len(rule.targets) == 1
+                f.write('%s: \\\n' % rule.targets[0])
                 for dep in sorted(deps):
                     f.write('  %s \\\n' % dep)
                 f.write('\n')
@@ -103,15 +105,16 @@ def run_cmd(rule):
             if not m:
                 new_out.append(line)
         out = '\n'.join(new_out)
-    built_text = "Built '%s'.\n" % rule.target
+    built_text = "Built '%s'.\n" % "'\n  and '".join(rule.targets)
 
     code = p.wait()
     if code:
         global any_errors
         any_errors = True
         stdout_write("%s%s\n\n'%s' failed with exit code %d\n" % (built_text, out, ' '.join(rule.cmd), code))
-        if os.path.exists(rule.target):
-            os.unlink(rule.target)
+        for t in rule.targets:
+            if os.path.exists(t):
+                os.unlink(t)
         exit(1)
 
     if out:
@@ -119,8 +122,8 @@ def run_cmd(rule):
     stdout_write(built_text)
 
 class Rule:
-    def __init__(self, target, deps, cmd, d_file, order_only_deps, vs_show_includes, stdout_filter):
-        self.target = target
+    def __init__(self, targets, deps, cmd, d_file, order_only_deps, vs_show_includes, stdout_filter):
+        self.targets = targets
         self.deps = deps
         self.cmd = cmd
         self.d_file = d_file
@@ -132,20 +135,25 @@ class BuildContext:
     def __init__(self):
         pass
 
-    def add_rule(self, target, deps, cmd, d_file=None, order_only_deps=[], vs_show_includes=False, stdout_filter=None):
-        if target in rules:
-            print("ERROR: multiple ways to build target '%s'" % target)
-            exit(1)
-        rules[target] = Rule(target, deps, cmd, d_file, order_only_deps, vs_show_includes, stdout_filter)
+    def add_rule(self, targets, deps, cmd, d_file=None, order_only_deps=[], vs_show_includes=False, stdout_filter=None):
+        if not isinstance(targets, list):
+            targets = [targets]
+        rule = Rule(targets, deps, cmd, d_file, order_only_deps, vs_show_includes, stdout_filter)
+        for t in targets:
+            if t in rules:
+                print("ERROR: multiple ways to build target '%s'" % t)
+                exit(1)
+            rules[t] = rule
 
 def build(target, options):
     if target in visited or target in completed:
         return
-    visited.add(target)
     if target not in rules:
+        visited.add(target)
         completed.add(target)
         return
     rule = rules[target]
+    visited.update(rule.targets)
 
     # Get the dependencies list, including .d file dependencies
     deps = rule.deps
@@ -169,7 +177,7 @@ def build(target, options):
         return
 
     # Don't build if already up to date
-    target_timestamp = get_timestamp_if_exists(rule.target)
+    target_timestamp = min(get_timestamp_if_exists(t) for t in rule.targets)
     if target_timestamp >= 0:
         for dep in deps:
             dep_timestamp = get_timestamp_if_exists(dep)
@@ -179,19 +187,20 @@ def build(target, options):
             completed.add(target)
             return
 
-    # Create the directory that the target is going to live in, if it doesn't already exist
-    target_dir = os.path.dirname(rule.target)
-    if not os.path.exists(target_dir):
-        os.makedirs(target_dir)
+    # Create the directories that the targets are going to live in, if they don't already exist
+    for t in rule.targets:
+        target_dir = os.path.dirname(t)
+        if not os.path.exists(target_dir):
+            os.makedirs(target_dir)
 
     if options.parallel:
         # Enqueue this task to a builder thread
         task_queue.put(rule)
-        enqueued.add(target)
+        enqueued.update(rule.targets)
     else:
         # Build the target immediately
         run_cmd(rule)
-        completed.add(rule.target)
+        completed.update(rule.targets)
 
 class BuilderThread(threading.Thread):
     def __init__(self):
@@ -203,7 +212,7 @@ class BuilderThread(threading.Thread):
             if rule is None:
                 break
             run_cmd(rule)
-            completed.add(rule.target)
+            completed.update(rule.targets)
 
 def main():
     # Parse command line
