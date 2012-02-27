@@ -59,6 +59,11 @@ def normpath(path):
         path = path.replace('\\', '/')
     return path
 
+def joinpath(cwd, path):
+    if path[0] == '/' or (os.name == 'nt' and path[1] == ':'):
+        return path # absolute path
+    return '%s/%s' % (cwd, path)
+
 def run_cmd(rule):
     # Always delete the targets first
     for t in rule.targets:
@@ -66,7 +71,7 @@ def run_cmd(rule):
             os.unlink(t)
 
     with io_lock:
-        p = subprocess.Popen(rule.cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        p = subprocess.Popen(rule.cmd, cwd=rule.cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
     # XXX What encoding should we use here??
     out = str(p.stdout.read(), 'utf-8').strip()
@@ -122,9 +127,10 @@ def run_cmd(rule):
     stdout_write(built_text)
 
 class Rule:
-    def __init__(self, targets, deps, cmd, d_file, order_only_deps, vs_show_includes, stdout_filter):
+    def __init__(self, targets, deps, cwd, cmd, d_file, order_only_deps, vs_show_includes, stdout_filter):
         self.targets = targets
         self.deps = deps
+        self.cwd = cwd
         self.cmd = cmd
         self.d_file = d_file
         self.order_only_deps = order_only_deps
@@ -138,7 +144,10 @@ class BuildContext:
     def add_rule(self, targets, deps, cmd, d_file=None, order_only_deps=[], vs_show_includes=False, stdout_filter=None):
         if not isinstance(targets, list):
             targets = [targets]
-        rule = Rule(targets, deps, cmd, d_file, order_only_deps, vs_show_includes, stdout_filter)
+        cwd = self.cwd
+        targets = [normpath(joinpath(cwd, x)) for x in targets]
+        order_only_deps = [normpath(joinpath(cwd, x)) for x in order_only_deps]
+        rule = Rule(targets, deps, cwd, cmd, d_file, order_only_deps, vs_show_includes, stdout_filter)
         for t in targets:
             if t in rules:
                 print("ERROR: multiple ways to build target '%s'" % t)
@@ -163,6 +172,7 @@ def build(target, options):
                 extra_deps = f.read()
         extra_deps = extra_deps.replace('\\\n', '').split()[1:]
         deps = deps + extra_deps
+    deps = [normpath(joinpath(rule.cwd, x)) for x in deps]
 
     # Recursively handle the dependencies, including .d file dependencies and order-only deps
     for dep in deps:
@@ -225,12 +235,14 @@ def main():
     (options, args) = parser.parse_args()
     if options.jobs is None:
         options.jobs = multiprocessing.cpu_count() # default to one job per CPU
+    cwd = os.getcwd()
+    args = [normpath(joinpath(cwd, x)) for x in args]
 
     # Set up rule DB
     ctx = BuildContext()
-    cwd = os.getcwd()
     for f in options.files:
-        pathname = normpath(os.path.join(cwd, f))
+        pathname = normpath(joinpath(cwd, f))
+        ctx.cwd = os.path.dirname(pathname)
         if options.verbose:
             print("Parsing '%s'..." % pathname)
         description = ('.py', 'U', imp.PY_SOURCE)
