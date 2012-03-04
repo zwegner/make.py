@@ -146,6 +146,8 @@ class BuildContext:
             targets = [targets]
         cwd = self.cwd
         targets = [normpath(joinpath(cwd, x)) for x in targets]
+        if d_file:
+            d_file = normpath(joinpath(cwd, d_file))
         order_only_deps = [normpath(joinpath(cwd, x)) for x in order_only_deps]
         rule = Rule(targets, deps, cwd, cmd, d_file, order_only_deps, vs_show_includes, stdout_filter)
         for t in targets:
@@ -224,6 +226,22 @@ class BuilderThread(threading.Thread):
             run_cmd(rule)
             completed.update(rule.targets)
 
+def parse_rules_py(ctx, options, pathname, visited):
+    if pathname in visited:
+        return
+    visited.add(pathname)
+    if options.verbose:
+        print("Parsing '%s'..." % pathname)
+    description = ('.py', 'U', imp.PY_SOURCE)
+    with open(pathname, 'r') as file:
+        rules_py_module = imp.load_module('rules%d' % len(visited), file, pathname, description)
+
+    dir = os.path.dirname(pathname)
+    for f in rules_py_module.submakes():
+        parse_rules_py(ctx, options, normpath(joinpath(dir, f)), visited)
+    ctx.cwd = dir
+    rules_py_module.rules(ctx)
+
 def main():
     # Parse command line
     parser = OptionParser()
@@ -241,19 +259,14 @@ def main():
     # Set up rule DB
     ctx = BuildContext()
     for f in options.files:
-        pathname = normpath(joinpath(cwd, f))
-        ctx.cwd = os.path.dirname(pathname)
-        if options.verbose:
-            print("Parsing '%s'..." % pathname)
-        description = ('.py', 'U', imp.PY_SOURCE)
-        with open(pathname, 'r') as file:
-            rules_py_module = imp.load_module('rules', file, pathname, description)
-            rules_py_module.rules(ctx)
+        parse_rules_py(ctx, options, normpath(joinpath(cwd, f)), visited)
 
     # Do the build
-    if options.clean and os.path.exists('_out'):
-        stdout_write("Cleaning '_out'...\n")
-        shutil.rmtree('_out')
+    if options.clean:
+        for dir in sorted({'%s/_out' % os.path.dirname(x) for x in visited}):
+            if os.path.exists(dir):
+                stdout_write("Cleaning '%s'...\n" % dir)
+                shutil.rmtree(dir)
     if options.parallel:
         # Create builder threads
         threads = []
