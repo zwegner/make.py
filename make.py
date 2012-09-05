@@ -247,7 +247,7 @@ def parse_rules_py(ctx, options, pathname, visited):
 
 def main():
     # Parse command line
-    parser = OptionParser()
+    parser = OptionParser(usage='%prog [options] target1_path [target2_path ...]')
     parser.add_option('-c', dest='clean', action='store_true', default=False, help='clean before building')
     parser.add_option('-f', dest='files', action='append', help='specify the path to a rules.py file', metavar='FILE')
     parser.add_option('-j', dest='jobs', type='int', default=None, help='specify the number of parallel jobs')
@@ -256,6 +256,9 @@ def main():
     (options, args) = parser.parse_args()
     if options.jobs is None:
         options.jobs = multiprocessing.cpu_count() # default to one job per CPU
+    if options.files is None:
+        parser.print_help()
+        exit(1)
     cwd = os.getcwd()
     args = [normpath(joinpath(cwd, x)) for x in args]
 
