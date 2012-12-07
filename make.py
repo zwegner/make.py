@@ -328,15 +328,13 @@ def main():
                     progress = ' '.join(sorted(x.rsplit('/', 1)[-1] for x in building))
                     progress = 'make.py: %d left, building: %s' % (incomplete_count, progress)
                 else:
-                    progress = 'make.py: done'
+                    progress = ''
                 if len(progress) < usable_columns:
                     pad = usable_columns - len(progress)
                     progress += ' ' * pad # erase old contents
                     progress += '\b' * pad # put cursor back at end of line
                 else:
                     progress = progress[0:usable_columns]
-                if not incomplete_count:
-                    progress += '\n'
                 stdout_write('\r%s' % progress)
             if all(target in completed for target in args):
                 break
