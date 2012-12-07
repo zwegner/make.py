@@ -268,6 +268,13 @@ def get_usable_columns():
         (size_x, size_y, cursor_x, cursor_y, attr, win_left, win_top, win_right, win_bottom, win_max_x, win_max_y) = \
             struct.unpack('hhhhHhhhhhh', csbi.raw)
         return win_right - win_left
+    elif sys.platform.startswith('linux'):
+        import fcntl, termios
+        try:
+            cr = struct.unpack('hh', fcntl.ioctl(1, termios.TIOCGWINSZ, '1234'))
+        except:
+            return None
+        return cr[1] - 1
     else:
         return None # XXX implement me under various Unix systems
 
