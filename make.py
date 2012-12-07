@@ -25,6 +25,7 @@ import os
 import queue
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import threading
@@ -34,6 +35,7 @@ from optparse import OptionParser
 visited = set()
 enqueued = set()
 completed = set()
+building = set()
 rules = {}
 task_queue = queue.Queue()
 io_lock = threading.Lock()
@@ -114,20 +116,24 @@ def run_cmd(rule):
                 new_out.append(line)
         out = '\n'.join(new_out)
     built_text = "Built '%s'.\n" % "'\n  and '".join(rule.targets)
+    if progress_line: # need to precede "Built [...]" with erasing the current progress indicator
+        built_text = '\r%s\r%s' % (' ' * usable_columns, built_text)
 
+    # XXX Do we want to add an additional check that all the targets must exist?
     code = p.wait()
     if code:
         global any_errors
         any_errors = True
-        stdout_write("%s%s\n\n'%s' failed with exit code %d\n" % (built_text, out, ' '.join(rule.cmd), code))
+        stdout_write("%s%s\n\n'%s' failed with exit code %d\n\n" % (built_text, out, ' '.join(rule.cmd), code))
         for t in rule.targets:
             if os.path.exists(t):
                 os.unlink(t)
         exit(1)
 
     if out:
-        built_text = '%s%s\n' % (built_text, out)
-    stdout_write(built_text)
+        stdout_write('%s%s\n\n' % (built_text, out))
+    elif not progress_line:
+        stdout_write(built_text)
 
 class Rule:
     def __init__(self, targets, deps, cwd, cmd, d_file, order_only_deps, vs_show_includes, stdout_filter):
@@ -226,7 +232,9 @@ class BuilderThread(threading.Thread):
             rule = task_queue.get()
             if rule is None:
                 break
+            building.update(rule.targets)
             run_cmd(rule)
+            building.difference_update(rule.targets)
             completed.update(rule.targets)
 
 def parse_rules_py(ctx, options, pathname, visited):
@@ -247,6 +255,22 @@ def parse_rules_py(ctx, options, pathname, visited):
     if hasattr(rules_py_module, 'rules'):
         rules_py_module.rules(ctx)
 
+# returns width-1 for interactive console, or None if stdout is redirected
+def get_usable_columns():
+    if os.name == 'nt':
+        import ctypes
+
+        h_stdout = ctypes.windll.kernel32.GetStdHandle(-11)
+        csbi = ctypes.create_string_buffer(22)
+        if not ctypes.windll.kernel32.GetConsoleScreenBufferInfo(h_stdout, csbi):
+            return None
+
+        (size_x, size_y, cursor_x, cursor_y, attr, win_left, win_top, win_right, win_bottom, win_max_x, win_max_y) = \
+            struct.unpack('hhhhHhhhhhh', csbi.raw)
+        return win_right - win_left
+    else:
+        return None # XXX implement me under various Unix systems
+
 def main():
     # Parse command line
     parser = OptionParser(usage='%prog [options] target1_path [target2_path ...]')
@@ -263,6 +287,11 @@ def main():
         exit(1)
     cwd = os.getcwd()
     args = [normpath(joinpath(cwd, x)) for x in args]
+
+    # Presumably -v should shut off the progress indicator; supporting it w/ --no-parallel seems like extra work for no gain.
+    global progress_line, usable_columns
+    usable_columns = get_usable_columns()
+    progress_line = usable_columns is not None and not options.verbose and options.parallel
 
     # Set up rule DB
     ctx = BuildContext()
@@ -290,12 +319,28 @@ def main():
             for target in args:
                 build(target, options)
 
-            # Check if done, sleep to prevent burning 100% of CPU, check again immediately after the sleep
-            if any_errors or all(target in completed for target in args):
+            # Show progress update and exit if done, otherwise sleep to prevent burning 100% of CPU
+            if any_errors:
+                break
+            if progress_line:
+                incomplete_count = sum(1 for x in (visited - completed) if x in rules)
+                if incomplete_count:
+                    progress = ' '.join(sorted(x.rsplit('/', 1)[-1] for x in building))
+                    progress = 'make.py: %d left, building: %s' % (incomplete_count, progress)
+                else:
+                    progress = 'make.py: done'
+                if len(progress) < usable_columns:
+                    pad = usable_columns - len(progress)
+                    progress += ' ' * pad # erase old contents
+                    progress += '\b' * pad # put cursor back at end of line
+                else:
+                    progress = progress[0:usable_columns]
+                if not incomplete_count:
+                    progress += '\n'
+                stdout_write('\r%s' % progress)
+            if all(target in completed for target in args):
                 break
             time.sleep(0.1)
-            if any_errors or all(target in completed for target in args):
-                break
 
         # Shut down the system by sending sentinel tokens to all the threads
         for i in range(options.jobs):
