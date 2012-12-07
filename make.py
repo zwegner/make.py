@@ -240,10 +240,12 @@ def parse_rules_py(ctx, options, pathname, visited):
         rules_py_module = imp.load_module('rules%d' % len(visited), file, pathname, description)
 
     dir = os.path.dirname(pathname)
-    for f in rules_py_module.submakes():
-        parse_rules_py(ctx, options, normpath(joinpath(dir, f)), visited)
+    if hasattr(rules_py_module, 'submakes'):
+        for f in rules_py_module.submakes():
+            parse_rules_py(ctx, options, normpath(joinpath(dir, f)), visited)
     ctx.cwd = dir
-    rules_py_module.rules(ctx)
+    if hasattr(rules_py_module, 'rules'):
+        rules_py_module.rules(ctx)
 
 def main():
     # Parse command line
