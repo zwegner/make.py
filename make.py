@@ -37,7 +37,8 @@ enqueued = set()
 completed = set()
 building = set()
 rules = {}
-task_queue = queue.Queue()
+task_queue = queue.PriorityQueue()
+priority_queue_counter = 0 # tiebreaker counter to fall back to FIFO when rule priorities are the same
 io_lock = threading.Lock()
 any_errors = False
 
@@ -150,7 +151,8 @@ class BuildContext:
     def __init__(self):
         pass
 
-    def add_rule(self, targets, deps, cmd, d_file=None, order_only_deps=[], vs_show_includes=False, stdout_filter=None):
+    # XXX Replace "priority" with some kind of runtime estimate that we can backpropagate to compute estimated latencies.
+    def add_rule(self, targets, deps, cmd, d_file=None, order_only_deps=[], vs_show_includes=False, stdout_filter=None, priority=0):
         if not isinstance(targets, list):
             targets = [targets]
         cwd = self.cwd
@@ -159,6 +161,7 @@ class BuildContext:
             d_file = normpath(joinpath(cwd, d_file))
         order_only_deps = [normpath(joinpath(cwd, x)) for x in order_only_deps]
         rule = Rule(targets, deps, cwd, cmd, d_file, order_only_deps, vs_show_includes, stdout_filter)
+        rule.priority = priority
         for t in targets:
             if t in rules:
                 print("ERROR: multiple ways to build target '%s'" % t)
@@ -215,8 +218,10 @@ def build(target, options):
             os.makedirs(target_dir)
 
     if options.parallel:
-        # Enqueue this task to a builder thread
-        task_queue.put(rule)
+        # Enqueue this task to a builder thread -- note that PriorityQueue needs the sense of priority reversed
+        global priority_queue_counter
+        task_queue.put((-rule.priority, priority_queue_counter, rule))
+        priority_queue_counter += 1
         enqueued.update(rule.targets)
     else:
         # Build the target immediately
@@ -229,7 +234,7 @@ class BuilderThread(threading.Thread):
 
     def run(self):
         while not any_errors:
-            rule = task_queue.get()
+            (priority, counter, rule) = task_queue.get()
             if rule is None:
                 break
             building.update(rule.targets)
@@ -349,7 +354,7 @@ def main():
 
         # Shut down the system by sending sentinel tokens to all the threads
         for i in range(options.jobs):
-            task_queue.put(None)
+            task_queue.put((1000000, 0, None)) # lower priority than any real rule
         for t in threads:
             t.join()
     else:
