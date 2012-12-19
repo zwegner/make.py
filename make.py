@@ -19,9 +19,11 @@
 # OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 import errno
+import hashlib
 import imp
 import multiprocessing
 import os
+import pickle
 import queue
 import re
 import shutil
@@ -37,6 +39,7 @@ enqueued = set()
 completed = set()
 building = set()
 rules = {}
+make_db = {}
 task_queue = queue.PriorityQueue()
 priority_queue_counter = 0 # tiebreaker counter to fall back to FIFO when rule priorities are the same
 io_lock = threading.Lock()
@@ -72,9 +75,12 @@ def joinpath(cwd, path):
 
 def run_cmd(rule):
     # Always delete the targets first
+    local_make_db = make_db[rule.cwd]
     for t in rule.targets:
         if os.path.exists(t):
             os.unlink(t)
+        if t in local_make_db:
+            del local_make_db[t]
 
     with io_lock:
         p = subprocess.Popen(rule.cmd, cwd=rule.cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -131,6 +137,8 @@ def run_cmd(rule):
                 os.unlink(t)
         exit(1)
 
+    for t in rule.targets:
+        local_make_db[t] = rule.signature()
     if out:
         stdout_write('%s%s\n\n' % (built_text, out))
     elif not progress_line:
@@ -146,6 +154,11 @@ class Rule:
         self.order_only_deps = order_only_deps
         self.vs_show_includes = vs_show_includes
         self.stdout_filter = stdout_filter
+
+    # order_only_deps, stdout_filter, priority are excluded from signatures because none of them should affect the targets' new content.
+    def signature(self):
+        info = (self.targets, self.deps, self.cwd, self.cmd, self.d_file, self.vs_show_includes)
+        return hashlib.sha1(pickle.dumps(info)).hexdigest()
 
 class BuildContext:
     def __init__(self):
@@ -204,12 +217,12 @@ def build(target, options):
     target_timestamp = min(get_timestamp_if_exists(t) for t in rule.targets)
     if target_timestamp >= 0:
         for dep in deps:
-            dep_timestamp = get_timestamp_if_exists(dep)
-            if target_timestamp < dep_timestamp:
+            if target_timestamp < get_timestamp_if_exists(dep):
                 break
         else:
-            completed.add(target)
-            return
+            if all(make_db[rule.cwd].get(t) == rule.signature() for t in rule.targets):
+                completed.add(target)
+                return
 
     # Create the directories that the targets are going to live in, if they don't already exist
     for t in rule.targets:
@@ -253,6 +266,14 @@ def parse_rules_py(ctx, options, pathname, visited):
         rules_py_module = imp.load_module('rules%d' % len(visited), file, pathname, description)
 
     dir = os.path.dirname(pathname)
+    if dir not in make_db:
+        make_db[dir] = {}
+        path = '%s/_out/make.db' % dir
+        if os.path.exists(path):
+            with open(path) as f:
+                for line in f:
+                    (target, signature) = line.rstrip().rsplit(' ', 1)
+                    make_db[dir][target] = signature
     if hasattr(rules_py_module, 'submakes'):
         for f in rules_py_module.submakes():
             parse_rules_py(ctx, options, normpath(joinpath(dir, f)), visited)
@@ -305,17 +326,26 @@ def main():
     usable_columns = get_usable_columns()
     progress_line = usable_columns is not None and not options.verbose and options.parallel
 
-    # Set up rule DB
+    # Set up rule DB, reading in make.db files as we go
     ctx = BuildContext()
     for f in options.files:
         parse_rules_py(ctx, options, normpath(joinpath(cwd, f)), visited)
 
-    # Do the build
-    if options.clean:
-        for dir in sorted({'%s/_out' % os.path.dirname(x) for x in visited}):
+    # Clean up stale targets from previous builds that no longer have rules; also do an explicitly requested clean
+    for (cwd, db) in make_db.items():
+        if options.clean:
+            dir = '%s/_out' % cwd
             if os.path.exists(dir):
                 stdout_write("Cleaning '%s'...\n" % dir)
                 shutil.rmtree(dir)
+            db.clear()
+        for (target, signature) in list(db.items()):
+            if target not in rules:
+                if os.path.exists(target):
+                    print("Deleting stale target '%s'..." % target)
+                    os.unlink(target)
+                del db[target]
+
     if options.parallel:
         # Create builder threads
         threads = []
@@ -325,41 +355,55 @@ def main():
             t.start()
             threads.append(t)
 
-        # Enqueue work to the builders
-        while True:
-            visited.clear()
+    # Do the build, and try to shut down as cleanly as possible if we get a Ctrl-C
+    try:
+        if options.parallel:
+            # Enqueue work to the builders
+            while True:
+                visited.clear()
+                for target in args:
+                    build(target, options)
+
+                # Show progress update and exit if done, otherwise sleep to prevent burning 100% of CPU
+                if any_errors:
+                    break
+                if progress_line:
+                    incomplete_count = sum(1 for x in (visited - completed) if x in rules)
+                    if incomplete_count:
+                        progress = ' '.join(sorted(x.rsplit('/', 1)[-1] for x in building))
+                        progress = 'make.py: %d left, building: %s' % (incomplete_count, progress)
+                    else:
+                        progress = ''
+                    if len(progress) < usable_columns:
+                        pad = usable_columns - len(progress)
+                        progress += ' ' * pad # erase old contents
+                        progress += '\b' * pad # put cursor back at end of line
+                    else:
+                        progress = progress[0:usable_columns]
+                    stdout_write('\r%s' % progress)
+                if all(target in completed for target in args):
+                    break
+                time.sleep(0.1)
+        else:
             for target in args:
                 build(target, options)
+    finally:
+        if options.parallel:
+            # Shut down the system by sending sentinel tokens to all the threads
+            for i in range(options.jobs):
+                task_queue.put((1000000, 0, None)) # lower priority than any real rule
+            for t in threads:
+                t.join()
 
-            # Show progress update and exit if done, otherwise sleep to prevent burning 100% of CPU
-            if any_errors:
-                break
-            if progress_line:
-                incomplete_count = sum(1 for x in (visited - completed) if x in rules)
-                if incomplete_count:
-                    progress = ' '.join(sorted(x.rsplit('/', 1)[-1] for x in building))
-                    progress = 'make.py: %d left, building: %s' % (incomplete_count, progress)
-                else:
-                    progress = ''
-                if len(progress) < usable_columns:
-                    pad = usable_columns - len(progress)
-                    progress += ' ' * pad # erase old contents
-                    progress += '\b' * pad # put cursor back at end of line
-                else:
-                    progress = progress[0:usable_columns]
-                stdout_write('\r%s' % progress)
-            if all(target in completed for target in args):
-                break
-            time.sleep(0.1)
-
-        # Shut down the system by sending sentinel tokens to all the threads
-        for i in range(options.jobs):
-            task_queue.put((1000000, 0, None)) # lower priority than any real rule
-        for t in threads:
-            t.join()
-    else:
-        for target in args:
-            build(target, options)
+        # Write out the final make.db files
+        # XXX May want to do this "occasionally" as the build is running?  (not too often to avoid a perf hit, but often
+        # enough to avoid data loss)
+        for (cwd, db) in make_db.items():
+            if not os.path.exists('%s/_out' % cwd):
+                os.mkdir('%s/_out' % cwd)
+            with open('%s/_out/make.db' % cwd, 'w') as f:
+                for (target, signature) in db.items():
+                    f.write('%s %s\n' % (target, signature))
 
     if any_errors:
         exit(1)
