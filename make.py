@@ -119,12 +119,7 @@ def run_cmd(rule):
             out = '\n'.join(new_out)
     elif rule.stdout_filter:
         r = re.compile(rule.stdout_filter)
-        new_out = []
-        for line in out.splitlines():
-            m = r.match(line)
-            if not m:
-                new_out.append(line)
-        out = '\n'.join(new_out)
+        out = '\n'.join(line for line in out.splitlines() if not r.match(line))
     built_text = "Built '%s'.\n" % "'\n  and '".join(rule.targets)
     if progress_line: # need to precede "Built [...]" with erasing the current progress indicator
         built_text = '\r%s\r%s' % (' ' * usable_columns, built_text)
