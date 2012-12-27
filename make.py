@@ -188,6 +188,8 @@ def build(target, options):
         return
     rule = rules[target]
     visited.update(rule.targets)
+    if target in enqueued:
+        return
 
     # Get the dependencies list, including .d file dependencies
     deps = rule.deps
@@ -207,8 +209,6 @@ def build(target, options):
     if not all(dep in completed for dep in deps):
         return
     if not all(dep in completed for dep in rule.order_only_deps):
-        return
-    if target in enqueued:
         return
 
     # Don't build if already up to date
