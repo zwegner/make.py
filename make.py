@@ -40,6 +40,7 @@ completed = set()
 building = set()
 rules = {}
 make_db = {}
+normpath_cache = {}
 task_queue = queue.PriorityQueue()
 priority_queue_counter = 0 # tiebreaker counter to fall back to FIFO when rule priorities are the same
 io_lock = threading.Lock()
@@ -62,11 +63,13 @@ def get_timestamp_if_exists(path):
         raise
 
 def normpath(path):
-    path = os.path.normpath(path)
+    if path in normpath_cache:
+        return normpath_cache[path]
+    ret = os.path.normpath(path)
     if os.name == 'nt':
-        path = path.lower()
-        path = path.replace('\\', '/')
-    return path
+        ret = ret.lower().replace('\\', '/')
+    normpath_cache[path] = ret
+    return ret
 
 def joinpath(cwd, path):
     if path[0] == '/' or (os.name == 'nt' and path[1] == ':'):
@@ -215,14 +218,10 @@ def build(target, options):
 
     # Don't build if already up to date
     target_timestamp = min(get_timestamp_if_exists(t) for t in rule.targets)
-    if target_timestamp >= 0:
-        for dep in deps:
-            if target_timestamp < get_timestamp_if_exists(dep):
-                break
-        else:
-            if all(make_db[rule.cwd].get(t) == rule.signature() for t in rule.targets):
-                completed.add(target)
-                return
+    if target_timestamp >= 0 and all(target_timestamp >= get_timestamp_if_exists(dep) for dep in deps):
+        if all(make_db[rule.cwd].get(t) == rule.signature() for t in rule.targets):
+            completed.add(target)
+            return
 
     # Create the directories that the targets are going to live in, if they don't already exist
     for t in rule.targets:
