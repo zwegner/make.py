@@ -71,10 +71,12 @@ def normpath(path):
     normpath_cache[path] = ret
     return ret
 
-def joinpath(cwd, path):
-    if path[0] == '/' or (os.name == 'nt' and path[1] == ':'):
-        return path # absolute path
-    return '%s/%s' % (cwd, path)
+if os.name == 'nt': # evaluate this condition only once, rather than per call, for performance
+    def joinpath(cwd, path):
+        return path if (path[0] == '/' or path[1] == ':') else '%s/%s' % (cwd, path)
+else:
+    def joinpath(cwd, path):
+        return path if path[0] == '/' else '%s/%s' % (cwd, path)
 
 def run_cmd(rule):
     # Always delete the targets first
