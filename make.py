@@ -290,7 +290,7 @@ def get_usable_columns():
         (size_x, size_y, cursor_x, cursor_y, attr, win_left, win_top, win_right, win_bottom, win_max_x, win_max_y) = \
             struct.unpack('hhhhHhhhhhh', csbi.raw)
         return win_right - win_left
-    elif sys.platform.startswith('linux'):
+    elif sys.platform.startswith('linux') or sys.platform.startswith('darwin'):
         import fcntl, termios
         try:
             cr = struct.unpack('hh', fcntl.ioctl(1, termios.TIOCGWINSZ, '1234'))
@@ -298,22 +298,21 @@ def get_usable_columns():
             return None
         return cr[1] - 1
     else:
-        return None # XXX implement me under various Unix systems
+        return None # XXX maybe we can just use TIOCGWINSZ on *all* Unix platforms?  not sure if any of them don't support it
 
 def main():
     # Parse command line
     parser = OptionParser(usage='%prog [options] target1_path [target2_path ...]')
     parser.add_option('-c', dest='clean', action='store_true', default=False, help='clean before building')
-    parser.add_option('-f', dest='files', action='append', help='specify the path to a rules.py file', metavar='FILE')
-    parser.add_option('-j', dest='jobs', type='int', default=None, help='specify the number of parallel jobs')
+    parser.add_option('-f', dest='files', action='append', help='specify the path to a rules.py file (default is "rules.py")', metavar='FILE')
+    parser.add_option('-j', dest='jobs', type='int', default=None, help='specify the number of parallel jobs (defaults to one per CPU)')
     parser.add_option('-v', dest='verbose', action='store_true', help='print verbose build output')
     parser.add_option('--no-parallel', dest='parallel', action='store_false', default=True, help='disable parallel build')
     (options, args) = parser.parse_args()
     if options.jobs is None:
         options.jobs = multiprocessing.cpu_count() # default to one job per CPU
     if options.files is None:
-        parser.print_help()
-        exit(1)
+        options.files = ['rules.py'] # default to "-f rules.py"
     cwd = os.getcwd()
     args = [normpath(joinpath(cwd, x)) for x in args]
 
@@ -326,6 +325,10 @@ def main():
     ctx = BuildContext()
     for f in options.files:
         parse_rules_py(ctx, options, normpath(joinpath(cwd, f)), visited)
+    for target in args:
+        if target not in rules:
+            print("ERROR: no rule to build target '%s'" % target)
+            exit(1)
 
     # Clean up stale targets from previous builds that no longer have rules; also do an explicitly requested clean
     for (cwd, db) in make_db.items():
