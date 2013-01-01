@@ -137,7 +137,10 @@ def run_cmd(rule, options):
     # XXX Do we want to add an additional check that all the targets must exist?
     code = p.wait()
     if options.verbose or code:
-        out = '%s\n%s' % (' '.join(rule.cmd), out) # XXX Add correct shell quoting to this print
+        if os.name == 'nt':
+            out = '%s\n%s' % (subprocess.list2cmdline(rule.cmd), out)
+        else:
+            out = '%s\n%s' % (' '.join(rule.cmd), out) # XXX Add correct shell quoting to this print
         out = out.rstrip()
     if code:
         global any_errors
