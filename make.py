@@ -43,8 +43,16 @@ make_db = {}
 normpath_cache = {}
 task_queue = queue.PriorityQueue()
 priority_queue_counter = 0 # tiebreaker counter to fall back to FIFO when rule priorities are the same
-io_lock = threading.Lock()
 any_errors = False
+
+# This is used to work around some Python bugs:
+# 1. It would be nice if sys.stdout.write from multiple threads were atomic, but I've observed problems.
+# 2. On Windows, if one thread calls subprocess.Popen while another thread has a file handle from open()
+# open, the file handle will be incorrectly and unintentionally inherited by the child process.  This
+# leads to really strange file locking errors.
+# XXX Split io_lock into stdout_lock and subprocess_io_lock
+# XXX Maybe make one or both conditional on platform (certainly I don't think Unix has the subprocess bug)
+io_lock = threading.Lock()
 
 # An atomic write to stdout from any thread
 def stdout_write(x):
@@ -166,13 +174,21 @@ class BuildContext:
 
     # XXX Replace "priority" with some kind of runtime estimate that we can backpropagate to compute estimated latencies.
     def add_rule(self, targets, deps, cmd, d_file=None, order_only_deps=[], vs_show_includes=False, stdout_filter=None, priority=0):
-        if not isinstance(targets, list):
-            targets = [targets]
         cwd = self.cwd
+        if not isinstance(targets, list):
+            assert isinstance(targets, str) # we expect targets to be either a str (a single target) or a list of targets
+            targets = [targets]
         targets = [normpath(joinpath(cwd, x)) for x in targets]
-        if d_file:
+        assert isinstance(deps, list) # we expect deps to be a list of deps
+        assert isinstance(cmd, list) # we expect cmd to be a list of args, not a string with spaces between args
+        if d_file is not None:
+            assert isinstance(d_file, str) # we expect d_file to be ether None or a str (the path of the .d file)
             d_file = normpath(joinpath(cwd, d_file))
+        assert isinstance(order_only_deps, list)
         order_only_deps = [normpath(joinpath(cwd, x)) for x in order_only_deps]
+        assert stdout_filter is None or isinstance(stdout_filter, str)
+        assert priority >= 0 # we expect priority to be a nonnegative integer
+
         rule = Rule(targets, deps, cwd, cmd, d_file, order_only_deps, vs_show_includes, stdout_filter)
         rule.priority = priority
         for t in targets:
