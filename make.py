@@ -24,6 +24,7 @@ import imp
 import multiprocessing
 import os
 import pickle
+import pipes
 import queue
 import re
 import shutil
@@ -140,7 +141,7 @@ def run_cmd(rule, options):
         if os.name == 'nt':
             out = '%s\n%s' % (subprocess.list2cmdline(rule.cmd), out)
         else:
-            out = '%s\n%s' % (' '.join(rule.cmd), out) # XXX Add correct shell quoting to this print
+            out = '%s\n%s' % (' '.join(pipes.quote(x) for x in rule.cmd), out)
         out = out.rstrip()
     if code:
         global any_errors
