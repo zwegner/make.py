@@ -21,6 +21,7 @@
 import errno
 import hashlib
 import imp
+import itertools
 import multiprocessing
 import os
 import pickle
@@ -216,32 +217,29 @@ def build(target, options):
     if target in enqueued:
         return
 
-    # Get the dependencies list, including .d file dependencies
-    deps = rule.deps
+    # Recursively handle the dependencies, including .d file dependencies and order-only deps
+    deps = [normpath(joinpath(rule.cwd, x)) for x in rule.deps]
+    d_file_deps = []
     if rule.d_file and os.path.exists(rule.d_file):
         with io_lock:
             with open(rule.d_file, 'rt') as f:
-                extra_deps = f.read()
-        extra_deps = extra_deps.replace('\\\n', '').split()[1:]
-        deps = deps + extra_deps
-    deps = [normpath(joinpath(rule.cwd, x)) for x in deps]
-
-    # Recursively handle the dependencies, including .d file dependencies and order-only deps
-    for dep in deps:
+                d_file_deps = f.read()
+        d_file_deps = d_file_deps.replace('\\\n', '').split()[1:]
+        d_file_deps = [normpath(joinpath(rule.cwd, x)) for x in d_file_deps]
+    for dep in itertools.chain(deps, d_file_deps, rule.order_only_deps):
         build(dep, options)
-    for dep in rule.order_only_deps:
-        build(dep, options)
-    if not all(dep in completed for dep in deps):
-        return
-    if not all(dep in completed for dep in rule.order_only_deps):
+    if any(dep not in completed for dep in itertools.chain(deps, d_file_deps, rule.order_only_deps)):
         return
 
     # Don't build if already up to date
+    # Slightly different rules for regular deps vs. d_file_deps -- always rebuild when a d_file_dep is nonexistent,
+    # whereas we want to fail with an error (XXX not yet implemented) when a regular dep is nonexistent
     target_timestamp = min(get_timestamp_if_exists(t) for t in rule.targets)
-    if target_timestamp >= 0 and all(target_timestamp >= get_timestamp_if_exists(dep) for dep in deps):
-        if all(make_db[rule.cwd].get(t) == rule.signature() for t in rule.targets):
-            completed.add(target)
-            return
+    if target_timestamp >= 0 and all(get_timestamp_if_exists(dep) <= target_timestamp for dep in deps):
+        if all(0 <= get_timestamp_if_exists(dep) <= target_timestamp for dep in d_file_deps):
+            if all(make_db[rule.cwd].get(t) == rule.signature() for t in rule.targets):
+                completed.add(target)
+                return
 
     # Create the directories that the targets are going to live in, if they don't already exist
     for t in rule.targets:
