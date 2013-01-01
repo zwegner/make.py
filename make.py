@@ -86,7 +86,7 @@ else:
     def joinpath(cwd, path):
         return path if path[0] == '/' else '%s/%s' % (cwd, path)
 
-def run_cmd(rule):
+def run_cmd(rule, options):
     # Always delete the targets first
     local_make_db = make_db[rule.cwd]
     for t in rule.targets:
@@ -136,10 +136,13 @@ def run_cmd(rule):
 
     # XXX Do we want to add an additional check that all the targets must exist?
     code = p.wait()
+    if options.verbose or code:
+        out = '%s\n%s' % (' '.join(rule.cmd), out) # XXX Add correct shell quoting to this print
+        out = out.rstrip()
     if code:
         global any_errors
         any_errors = True
-        stdout_write("%s%s\n\n'%s' failed with exit code %d\n\n" % (built_text, out, ' '.join(rule.cmd), code))
+        stdout_write("%s%s\n\nCommand failed with exit code %d\n\n" % (built_text, out, code))
         for t in rule.targets:
             if os.path.exists(t):
                 os.unlink(t)
@@ -250,12 +253,13 @@ def build(target, options):
         enqueued.update(rule.targets)
     else:
         # Build the target immediately
-        run_cmd(rule)
+        run_cmd(rule, options)
         completed.update(rule.targets)
 
 class BuilderThread(threading.Thread):
-    def __init__(self):
+    def __init__(self, options):
         threading.Thread.__init__(self)
+        self.options = options
 
     def run(self):
         while not any_errors:
@@ -263,7 +267,7 @@ class BuilderThread(threading.Thread):
             if rule is None:
                 break
             building.update(rule.targets)
-            run_cmd(rule)
+            run_cmd(rule, self.options)
             building.difference_update(rule.targets)
             completed.update(rule.targets)
 
@@ -365,7 +369,7 @@ def main():
         # Create builder threads
         threads = []
         for i in range(options.jobs):
-            t = BuilderThread()
+            t = BuilderThread(options)
             t.daemon = True
             t.start()
             threads.append(t)
