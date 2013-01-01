@@ -146,7 +146,7 @@ def run_cmd(rule, options):
     if code:
         global any_errors
         any_errors = True
-        stdout_write("%s%s\n\nCommand failed with exit code %d\n\n" % (built_text, out, code))
+        stdout_write("%s%s\n\n" % (built_text, out))
         for t in rule.targets:
             if os.path.exists(t):
                 os.unlink(t)
