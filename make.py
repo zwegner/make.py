@@ -387,12 +387,13 @@ def main():
                     build(target, options)
 
                 # Show progress update and exit if done, otherwise sleep to prevent burning 100% of CPU
+                # Be careful about iterating over data structures being edited concurrently by the BuilderThreads
                 if any_errors:
                     break
                 if progress_line:
                     incomplete_count = sum(1 for x in (visited - completed) if x in rules)
                     if incomplete_count:
-                        progress = ' '.join(sorted(x.rsplit('/', 1)[-1] for x in building))
+                        progress = ' '.join(sorted(x.rsplit('/', 1)[-1] for x in set(building)))
                         progress = 'make.py: %d left, building: %s' % (incomplete_count, progress)
                     else:
                         progress = ''
