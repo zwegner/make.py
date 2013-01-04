@@ -234,9 +234,14 @@ def build(target, options):
 
     # Don't build if already up to date
     # Slightly different rules for regular deps vs. d_file_deps -- always rebuild when a d_file_dep is nonexistent,
-    # whereas we want to fail with an error (XXX not yet implemented) when a regular dep is nonexistent
+    # whereas we want to fail with an error when a regular dep is nonexistent
     target_timestamp = min(get_timestamp_if_exists(t) for t in rule.targets)
-    if target_timestamp >= 0 and all(get_timestamp_if_exists(dep) <= target_timestamp for dep in deps):
+    dep_timestamps = [get_timestamp_if_exists(dep) for dep in deps]
+    for (dep, dep_timestamp) in zip(deps, dep_timestamps):
+        if dep_timestamp < 0:
+            stdout_write("\r%s\rERROR: dependency '%s' of '%s' is nonexistent\n" % (' ' * usable_columns, dep, ' '.join(rule.targets)))
+            exit(1)
+    if target_timestamp >= 0 and all(dep_timestamp <= target_timestamp for dep_timestamp in dep_timestamps):
         if all(0 <= get_timestamp_if_exists(dep) <= target_timestamp for dep in d_file_deps):
             if all(make_db[rule.cwd].get(t) == rule.signature() for t in rule.targets):
                 completed.add(target)
