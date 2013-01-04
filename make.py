@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 #
 # make.py (http://code.google.com/p/make-py/)
+# $Revision$
 # Copyright (c) 2012 Matt Craighead
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
