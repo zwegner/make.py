@@ -104,7 +104,7 @@ def run_cmd(rule, options):
     # XXX What encoding should we use here??
     out = str(p.stdout.read(), 'utf-8').strip()
 
-    if rule.vs_show_includes:
+    if rule.msvc_show_includes:
         deps = set()
         r = re.compile('^Note: including file:\\s*(.*)$')
         new_out = []
@@ -162,19 +162,19 @@ def run_cmd(rule, options):
         stdout_write(built_text)
 
 class Rule:
-    def __init__(self, targets, deps, cwd, cmd, d_file, order_only_deps, vs_show_includes, stdout_filter):
+    def __init__(self, targets, deps, cwd, cmd, d_file, order_only_deps, msvc_show_includes, stdout_filter):
         self.targets = targets
         self.deps = deps
         self.cwd = cwd
         self.cmd = cmd
         self.d_file = d_file
         self.order_only_deps = order_only_deps
-        self.vs_show_includes = vs_show_includes
+        self.msvc_show_includes = msvc_show_includes
         self.stdout_filter = stdout_filter
 
     # order_only_deps, stdout_filter, priority are excluded from signatures because none of them should affect the targets' new content.
     def signature(self):
-        info = (self.targets, self.deps, self.cwd, self.cmd, self.d_file, self.vs_show_includes)
+        info = (self.targets, self.deps, self.cwd, self.cmd, self.d_file, self.msvc_show_includes)
         return hashlib.sha1(pickle.dumps(info)).hexdigest()
 
 class BuildContext:
@@ -182,7 +182,7 @@ class BuildContext:
         pass
 
     # XXX Replace "priority" with some kind of runtime estimate that we can backpropagate to compute estimated latencies.
-    def add_rule(self, targets, deps, cmd, d_file=None, order_only_deps=[], vs_show_includes=False, stdout_filter=None, priority=0):
+    def add_rule(self, targets, deps, cmd, d_file=None, order_only_deps=[], msvc_show_includes=False, stdout_filter=None, priority=0):
         cwd = self.cwd
         if not isinstance(targets, list):
             assert isinstance(targets, str) # we expect targets to be either a str (a single target) or a list of targets
@@ -198,7 +198,7 @@ class BuildContext:
         assert stdout_filter is None or isinstance(stdout_filter, str)
         assert priority >= 0 # we expect priority to be a nonnegative integer
 
-        rule = Rule(targets, deps, cwd, cmd, d_file, order_only_deps, vs_show_includes, stdout_filter)
+        rule = Rule(targets, deps, cwd, cmd, d_file, order_only_deps, msvc_show_includes, stdout_filter)
         rule.priority = priority
         for t in targets:
             if t in rules:
