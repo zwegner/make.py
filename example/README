@@ -1,0 +1,3 @@
+This is a simple example of a rules.py file to illustrate compiling and linking C code.
+Simpler rules files are certainly possible, but this one was intended to illustrate several
+important features, such as .d file support.
