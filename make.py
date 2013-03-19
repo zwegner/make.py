@@ -2,7 +2,7 @@
 #
 # make.py (http://code.google.com/p/make-py/)
 # $Revision$
-# Copyright (c) 2012 Matt Craighead
+# Copyright (c) 2012-2013 Matt Craighead
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
 # associated documentation files (the "Software"), to deal in the Software without restriction,
@@ -98,75 +98,78 @@ def run_cmd(rule, options):
         if t in local_make_db:
             del local_make_db[t]
 
-    with io_lock:
-        p = subprocess.Popen(rule.cmd, cwd=rule.cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-
-    # XXX What encoding should we use here??
-    out = str(p.stdout.read(), 'utf-8').strip()
-
-    if rule.msvc_show_includes:
-        deps = set()
-        r = re.compile('^Note: including file:\\s*(.*)$')
-        new_out = []
-        for line in out.splitlines():
-            m = r.match(line)
-            if m:
-                dep = normpath(m.group(1))
-                if not dep.startswith('c:/program files'):
-                    deps.add(dep)
-            else:
-                new_out.append(line)
-        with io_lock:
-            with open(rule.d_file, 'wt') as f:
-                assert len(rule.targets) == 1
-                f.write('%s: \\\n' % rule.targets[0])
-                for dep in sorted(deps):
-                    f.write('  %s \\\n' % dep)
-                f.write('\n')
-
-        # In addition to filtering out the /showIncludes messages, filter the one remaining
-        # line of output where it just prints the source file name
-        if len(new_out) == 1:
-            out = ''
-        else:
-            out = '\n'.join(new_out)
-    elif rule.stdout_filter:
-        r = re.compile(rule.stdout_filter)
-        out = '\n'.join(line for line in out.splitlines() if not r.match(line))
     built_text = "Built '%s'.\n" % "'\n  and '".join(rule.targets)
     if progress_line: # need to precede "Built [...]" with erasing the current progress indicator
         built_text = '\r%s\r%s' % (' ' * usable_columns, built_text)
 
-    # XXX Do we want to add an additional check that all the targets must exist?
-    code = p.wait()
-    if options.verbose or code:
-        if os.name == 'nt':
-            out = '%s\n%s' % (subprocess.list2cmdline(rule.cmd), out)
-        else:
-            out = '%s\n%s' % (' '.join(pipes.quote(x) for x in rule.cmd), out)
-        out = out.rstrip()
-    if code:
-        global any_errors
-        any_errors = True
-        stdout_write("%s%s\n\n" % (built_text, out))
-        for t in rule.targets:
-            if os.path.exists(t):
-                os.unlink(t)
-        exit(1)
+    all_out = []
+    for cmd in rule.cmds:
+        # Run command, capture/filter its output, and get its exit code.
+        # XXX Do we want to add an additional check that all the targets must exist?
+        with io_lock:
+            p = subprocess.Popen(cmd, cwd=rule.cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        out = p.stdout.read().decode().strip() # XXX What encoding should we use here??  This assumes UTF-8
+        if rule.msvc_show_includes:
+            deps = set()
+            r = re.compile('^Note: including file:\\s*(.*)$')
+            new_out = []
+            for line in out.splitlines():
+                m = r.match(line)
+                if m:
+                    dep = normpath(m.group(1))
+                    if not dep.startswith('c:/program files'):
+                        deps.add(dep)
+                else:
+                    new_out.append(line)
+            with io_lock:
+                with open(rule.d_file, 'wt') as f:
+                    assert len(rule.targets) == 1
+                    f.write('%s: \\\n' % rule.targets[0])
+                    for dep in sorted(deps):
+                        f.write('  %s \\\n' % dep)
+                    f.write('\n')
+
+            # In addition to filtering out the /showIncludes messages, filter the one remaining
+            # line of output where it just prints the source file name
+            if len(new_out) == 1:
+                out = ''
+            else:
+                out = '\n'.join(new_out)
+        elif rule.stdout_filter:
+            r = re.compile(rule.stdout_filter)
+            out = '\n'.join(line for line in out.splitlines() if not r.match(line))
+        code = p.wait()
+
+        if options.verbose or code:
+            if os.name == 'nt':
+                out = '%s\n%s' % (subprocess.list2cmdline(cmd), out)
+            else:
+                out = '%s\n%s' % (' '.join(pipes.quote(x) for x in cmd), out)
+            out = out.rstrip()
+        if out:
+            all_out.append(out)
+        if code:
+            global any_errors
+            any_errors = True
+            stdout_write("%s%s\n\n" % (built_text, '\n'.join(all_out)))
+            for t in rule.targets:
+                if os.path.exists(t):
+                    os.unlink(t)
+            exit(1)
 
     for t in rule.targets:
         local_make_db[t] = rule.signature()
-    if out:
-        stdout_write('%s%s\n\n' % (built_text, out))
+    if all_out:
+        stdout_write('%s%s\n\n' % (built_text, '\n'.join(all_out)))
     elif not progress_line:
         stdout_write(built_text)
 
 class Rule:
-    def __init__(self, targets, deps, cwd, cmd, d_file, order_only_deps, msvc_show_includes, stdout_filter):
+    def __init__(self, targets, deps, cwd, cmds, d_file, order_only_deps, msvc_show_includes, stdout_filter):
         self.targets = targets
         self.deps = deps
         self.cwd = cwd
-        self.cmd = cmd
+        self.cmds = cmds
         self.d_file = d_file
         self.order_only_deps = order_only_deps
         self.msvc_show_includes = msvc_show_includes
@@ -174,7 +177,7 @@ class Rule:
 
     # order_only_deps, stdout_filter, priority are excluded from signatures because none of them should affect the targets' new content.
     def signature(self):
-        info = (self.targets, self.deps, self.cwd, self.cmd, self.d_file, self.msvc_show_includes)
+        info = (self.targets, self.deps, self.cwd, self.cmds, self.d_file, self.msvc_show_includes)
         return hashlib.sha1(pickle.dumps(info)).hexdigest()
 
 class BuildContext:
@@ -182,14 +185,16 @@ class BuildContext:
         pass
 
     # XXX Replace "priority" with some kind of runtime estimate that we can backpropagate to compute estimated latencies.
-    def add_rule(self, targets, deps, cmd, d_file=None, order_only_deps=[], msvc_show_includes=False, stdout_filter=None, priority=0):
+    def add_rule(self, targets, deps, cmds, d_file=None, order_only_deps=[], msvc_show_includes=False, stdout_filter=None, priority=0):
         cwd = self.cwd
         if not isinstance(targets, list):
             assert isinstance(targets, str) # we expect targets to be either a str (a single target) or a list of targets
             targets = [targets]
         targets = [normpath(joinpath(cwd, x)) for x in targets]
         assert isinstance(deps, list) # we expect deps to be a list of deps
-        assert isinstance(cmd, list) # we expect cmd to be a list of args, not a string with spaces between args
+        assert isinstance(cmds, list) # cmds is intended to be a list of lists of arg strings
+        if isinstance(cmds[0], str):
+            cmds = [cmds] # but, we allow just a single command as a list of strings -- wrap it with another list
         if d_file is not None:
             assert isinstance(d_file, str) # we expect d_file to be ether None or a str (the path of the .d file)
             d_file = normpath(joinpath(cwd, d_file))
@@ -198,7 +203,7 @@ class BuildContext:
         assert stdout_filter is None or isinstance(stdout_filter, str)
         assert priority >= 0 # we expect priority to be a nonnegative integer
 
-        rule = Rule(targets, deps, cwd, cmd, d_file, order_only_deps, msvc_show_includes, stdout_filter)
+        rule = Rule(targets, deps, cwd, cmds, d_file, order_only_deps, msvc_show_includes, stdout_filter)
         rule.priority = priority
         for t in targets:
             if t in rules:
