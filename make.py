@@ -244,7 +244,10 @@ def build(target, options):
     dep_timestamps = [get_timestamp_if_exists(dep) for dep in deps]
     for (dep, dep_timestamp) in zip(deps, dep_timestamps):
         if dep_timestamp < 0:
-            stdout_write("\r%s\rERROR: dependency '%s' of '%s' is nonexistent\n" % (' ' * usable_columns, dep, ' '.join(rule.targets)))
+            if progress_line:
+                stdout_write("\r%s\rERROR: dependency '%s' of '%s' is nonexistent\n" % (' ' * usable_columns, dep, ' '.join(rule.targets)))
+            else:
+                stdout_write("ERROR: dependency '%s' of '%s' is nonexistent\n" % (dep, ' '.join(rule.targets)))
             exit(1)
     if target_timestamp >= 0 and all(dep_timestamp <= target_timestamp for dep_timestamp in dep_timestamps):
         if all(0 <= get_timestamp_if_exists(dep) <= target_timestamp for dep in d_file_deps):
