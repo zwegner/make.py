@@ -165,7 +165,7 @@ def run_cmd(rule, options):
         stdout_write(built_text)
 
 class Rule:
-    def __init__(self, targets, deps, cwd, cmds, d_file, order_only_deps, msvc_show_includes, stdout_filter):
+    def __init__(self, targets, deps, cwd, cmds, d_file, order_only_deps, msvc_show_includes, stdout_filter, latency):
         self.targets = targets
         self.deps = deps
         self.cwd = cwd
@@ -174,6 +174,7 @@ class Rule:
         self.order_only_deps = order_only_deps
         self.msvc_show_includes = msvc_show_includes
         self.stdout_filter = stdout_filter
+        self.latency = latency
         self.priority = 0
 
     # order_only_deps, stdout_filter, priority are excluded from signatures because none of them should affect the targets' new content.
@@ -185,7 +186,7 @@ class BuildContext:
     def __init__(self):
         pass
 
-    def add_rule(self, targets, deps, cmds, d_file=None, order_only_deps=[], msvc_show_includes=False, stdout_filter=None):
+    def add_rule(self, targets, deps, cmds, d_file=None, order_only_deps=[], msvc_show_includes=False, stdout_filter=None, latency=1):
         cwd = self.cwd
         if not isinstance(targets, list):
             assert isinstance(targets, str) # we expect targets to be either a str (a single target) or a list of targets
@@ -202,7 +203,7 @@ class BuildContext:
         order_only_deps = [normpath(joinpath(cwd, x)) for x in order_only_deps]
         assert stdout_filter is None or isinstance(stdout_filter, str)
 
-        rule = Rule(targets, deps, cwd, cmds, d_file, order_only_deps, msvc_show_includes, stdout_filter)
+        rule = Rule(targets, deps, cwd, cmds, d_file, order_only_deps, msvc_show_includes, stdout_filter, latency)
         for t in targets:
             if t in rules:
                 print("ERROR: multiple ways to build target '%s'" % t)
@@ -334,11 +335,11 @@ def get_usable_columns():
     else:
         return None # XXX maybe we can just use TIOCGWINSZ on *all* Unix platforms?  not sure if any of them don't support it
 
-# XXX Allow rules to specify an estimated latency.
 def propagate_latencies(target, latency):
     if target not in rules:
         return
     rule = rules[target]
+    latency += rule.latency
     if latency <= rule.priority:
         return # nothing to do -- we are not increasing the priority of this rule
     rule.priority = latency # update this rule's latency
@@ -346,7 +347,7 @@ def propagate_latencies(target, latency):
     # Recursively handle the dependencies, including order-only deps
     deps = [normpath(joinpath(rule.cwd, x)) for x in rule.deps]
     for dep in itertools.chain(deps, rule.order_only_deps):
-        propagate_latencies(dep, latency+1)
+        propagate_latencies(dep, latency)
 
 def main():
     # Parse command line
@@ -377,7 +378,7 @@ def main():
         if target not in rules:
             print("ERROR: no rule to build target '%s'" % target)
             exit(1)
-        propagate_latencies(target, 1)
+        propagate_latencies(target, 0)
 
     # Clean up stale targets from previous builds that no longer have rules; also do an explicitly requested clean
     for (cwd, db) in make_db.items():
