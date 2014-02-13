@@ -247,6 +247,8 @@ def build(target, options):
                 stdout_write("\r%s\rERROR: dependency '%s' of '%s' is nonexistent\n" % (' ' * usable_columns, dep, ' '.join(rule.targets)))
             else:
                 stdout_write("ERROR: dependency '%s' of '%s' is nonexistent\n" % (dep, ' '.join(rule.targets)))
+            global any_errors
+            any_errors = True
             exit(1)
     if target_timestamp >= 0 and all(dep_timestamp <= target_timestamp for dep_timestamp in dep_timestamps):
         if all(0 <= get_timestamp_if_exists(dep) <= target_timestamp for dep in d_file_deps):
