@@ -29,6 +29,7 @@ import pickle
 import pipes
 import queue
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -229,7 +230,11 @@ def build(target, options):
         with io_lock:
             with open(rule.d_file, 'rt') as f:
                 d_file_deps = f.read()
-        d_file_deps = d_file_deps.replace('\\\n', '').split()[1:]
+        d_file_deps = d_file_deps.replace('\\\n', '')
+        if '\\' in d_file_deps: # shlex.split is slow, don't use it unless we really need it
+            d_file_deps = shlex.split(d_file_deps)[1:]
+        else:
+            d_file_deps = d_file_deps.split()[1:]
         d_file_deps = [normpath(joinpath(rule.cwd, x)) for x in d_file_deps]
     for dep in itertools.chain(deps, d_file_deps, rule.order_only_deps):
         build(dep, options)
