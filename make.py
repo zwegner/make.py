@@ -108,8 +108,15 @@ def run_cmd(rule, options):
         # Run command, capture/filter its output, and get its exit code.
         # XXX Do we want to add an additional check that all the targets must exist?
         with io_lock:
-            p = subprocess.Popen(cmd, cwd=rule.cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        out = p.stdout.read().decode().strip() # XXX What encoding should we use here??  This assumes UTF-8
+            try:
+                p = subprocess.Popen(cmd, cwd=rule.cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            except Exception as e:
+                p = None
+                out = str(e)
+                code = 1
+        if p is not None:
+            out = p.stdout.read().decode().strip() # XXX What encoding should we use here??  This assumes UTF-8
+            code = p.wait()
         if rule.msvc_show_includes:
             deps = set()
             r = re.compile('^Note: including file:\\s*(.*)$')
@@ -139,7 +146,6 @@ def run_cmd(rule, options):
         elif rule.stdout_filter:
             r = re.compile(rule.stdout_filter)
             out = '\n'.join(line for line in out.splitlines() if not r.match(line))
-        code = p.wait()
 
         if options.verbose or code:
             if os.name == 'nt':
