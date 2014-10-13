@@ -23,92 +23,112 @@
 # when you need to convert existing makefiles into rules.py files.
 
 import argparse
-import sys
+import os
 
-def eval_expr(expr, variables):
-    while True:
-        i = expr.find('$(')
-        if i < 0:
-            return expr
-        j = expr.find(')', i)
-        name = expr[i+2:j]
-        expr = expr[:i] + variables[name] + expr[j+1:]
+class ParseContext:
+    def __init__(self):
+        self.variables = {}
+        self.if_stack = [True]
+        self.else_stack = []
 
-def parse_makefile(path, variables):
-    if_stack = [True]
-    else_stack = []
+    def eval(self, expr):
+        while True:
+            i = expr.find('$(')
+            if i < 0:
+                return expr
+            j = expr.find(')', i)
+            name = expr[i+2:j]
+            expr = expr[:i] + self.variables[name] + expr[j+1:]
 
-    with open(path) as f:
-        line_prefix = ''
-        for line in f:
-            line = line_prefix + line.strip()
-            if not line or line.startswith('#'):
-                continue
-            if line.endswith('\\'):
-                line_prefix = line[:-1] + ' '
-                continue
+    def parse(self, path):
+        initial_if_stack_depth = len(self.if_stack)
+        with open(path) as f:
             line_prefix = ''
-            line_split = line.split()
-            if line.startswith('ifeq ('):
-                assert line.endswith(')')
-                line = line[6:-1].split(',')
-                assert len(line) == 2
-                line[0] = eval_expr(line[0], variables)
-                line[1] = eval_expr(line[1], variables)
-                result = line[0] == line[1]
-                else_stack.append(result)
-                if_stack.append(if_stack[-1] & result)
-            elif line.startswith('ifneq ('):
-                assert line.endswith(')')
-                line = line[7:-1].split(',')
-                assert len(line) == 2
-                line[0] = eval_expr(line[0], variables)
-                line[1] = eval_expr(line[1], variables)
-                result = line[0] != line[1]
-                else_stack.append(result)
-                if_stack.append(if_stack[-1] & result)
-            elif line.startswith('else ifeq ('):
-                assert line.endswith(')')
-                line = line[11:-1].split(',')
-                assert len(line) == 2
-                line[0] = eval_expr(line[0], variables)
-                line[1] = eval_expr(line[1], variables)
-                result = line[0] == line[1]
-                if_stack[-1] = if_stack[-2] and not else_stack[-1] and result
-                else_stack[-1] = else_stack[-1] or result
-            elif line == 'else':
-                if_stack[-1] = if_stack[-2] and not else_stack[-1]
-            elif line_split[0] == 'endif':
-                else_stack.pop()
-                if_stack.pop()
-            elif line.startswith('$(error '):
-                assert line.endswith(')')
-                line = line[8:-1]
-                if if_stack[-1]:
-                    print('ERROR: %s' % line)
+            for line in f:
+                line = line_prefix + line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if line.endswith('\\'):
+                    line_prefix = line[:-1] + ' '
+                    continue
+                line_prefix = ''
+                line_split = line.split()
+                if line.startswith('ifeq ('):
+                    assert line.endswith(')')
+                    line = line[6:-1].split(',')
+                    assert len(line) == 2
+                    line[0] = self.eval(line[0])
+                    line[1] = self.eval(line[1])
+                    result = line[0] == line[1]
+                    self.else_stack.append(result)
+                    self.if_stack.append(self.if_stack[-1] & result)
+                elif line.startswith('ifneq ('):
+                    assert line.endswith(')')
+                    line = line[7:-1].split(',')
+                    assert len(line) == 2
+                    line[0] = self.eval(line[0])
+                    line[1] = self.eval(line[1])
+                    result = line[0] != line[1]
+                    self.else_stack.append(result)
+                    self.if_stack.append(self.if_stack[-1] & result)
+                elif line.startswith('ifdef '):
+                    line = line[6:]
+                    result = self.variables.get(line, '') != ''
+                    self.else_stack.append(result)
+                    self.if_stack.append(self.if_stack[-1] & result)
+                elif line.startswith('else ifeq ('):
+                    assert line.endswith(')')
+                    line = line[11:-1].split(',')
+                    assert len(line) == 2
+                    line[0] = self.eval(line[0])
+                    line[1] = self.eval(line[1])
+                    result = line[0] == line[1]
+                    self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1] and result
+                    self.else_stack[-1] = self.else_stack[-1] or result
+                elif line == 'else':
+                    self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1]
+                elif line_split[0] == 'endif':
+                    self.else_stack.pop()
+                    self.if_stack.pop()
+                elif line.startswith('include '):
+                    if self.if_stack[-1]:
+                        include_path = self.eval(line[8:])
+                        if os.path.exists(include_path):
+                            self.parse(include_path)
+                        else:
+                            print('WARNING: include file %r does not exist' % include_path)
+                elif line.startswith('$(error '):
+                    assert line.endswith(')')
+                    line = line[8:-1]
+                    if self.if_stack[-1]:
+                        print('ERROR: %s' % line)
+                        exit(1)
+                elif len(line_split) >= 2 and line_split[1] == ':=':
+                    if self.if_stack[-1]:
+                        value = self.eval(' '.join(line_split[2:]))
+                        self.variables[line_split[0]] = value
+                elif len(line_split) >= 2 and line_split[1] == '+=':
+                    if self.if_stack[-1]:
+                        value = self.eval(' '.join(line_split[2:]))
+                        if line_split[0] in self.variables:
+                            self.variables[line_split[0]] += ' ' + value
+                        else:
+                            self.variables[line_split[0]] = value
+                else:
+                    print('ERROR: could not parse %r' % line)
                     exit(1)
-            elif len(line_split) >= 2 and line_split[1] == ':=':
-                if if_stack[-1]:
-                    variables[line_split[0]] = ' '.join(line_split[2:])
-            elif len(line_split) >= 2 and line_split[1] == '+=':
-                if if_stack[-1]:
-                    variables[line_split[0]] += ' ' + ' '.join(line_split[2:])
-            else:
-                print('ERROR: could not parse %r' % line)
-                exit(1)
-    assert if_stack == [True]
+        assert not line_prefix
+        assert initial_if_stack_depth == len(self.if_stack)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-d', action='append', dest='defines', default=[], help='set a variable')
 parser.add_argument('-f', '--file', help='input file to parse')
 args = parser.parse_args()
 
-print(args)
-
-variables = {}
+ctx = ParseContext()
 for d in args.defines:
     (k, v) = d.split('=', 1)
-    variables[k] = v
-parse_makefile(args.file, variables)
-for (k, v) in sorted(variables.items()):
+    ctx.variables[k] = v
+ctx.parse(args.file)
+for (k, v) in sorted(ctx.variables.items()):
     print('%s: %r' % (k, v))
