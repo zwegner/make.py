@@ -33,12 +33,28 @@ class ParseContext:
 
     def eval(self, expr):
         while True:
-            i = expr.find('$(')
+            i = expr.rfind('$(')
             if i < 0:
                 return expr
             j = expr.find(')', i)
             name = expr[i+2:j]
-            expr = expr[:i] + self.variables[name] + expr[j+1:]
+            if name.startswith('sort '):
+                value = ' '.join(sorted(set(name[5:].split())))
+            elif name.startswith('filter '):
+                # XXX patterns can use %
+                (pattern, text) = name[7:].split(',', 1)
+                value = ' '.join(x for x in text.split() if x == pattern)
+            elif name.startswith('addprefix '):
+                (prefix, names) = name[10:].split(',', 1)
+                value = ' '.join(prefix + x for x in names.split())
+            else:
+                value = self.variables[name]
+            expr = expr[:i] + value + expr[j+1:]
+
+    def is_eq(self, expr):
+        expr = expr.split(',')
+        assert len(expr) == 2
+        return expr[0] == expr[1]
 
     def parse(self, path):
         initial_if_stack_depth = len(self.if_stack)
@@ -55,20 +71,18 @@ class ParseContext:
                 line_split = line.split()
                 if line.startswith('ifeq ('):
                     assert line.endswith(')')
-                    line = line[6:-1].split(',')
-                    assert len(line) == 2
-                    line[0] = self.eval(line[0])
-                    line[1] = self.eval(line[1])
-                    result = line[0] == line[1]
+                    if self.if_stack[-1]:
+                        result = self.is_eq(self.eval(line[6:-1]))
+                    else:
+                        result = False
                     self.else_stack.append(result)
                     self.if_stack.append(self.if_stack[-1] & result)
                 elif line.startswith('ifneq ('):
                     assert line.endswith(')')
-                    line = line[7:-1].split(',')
-                    assert len(line) == 2
-                    line[0] = self.eval(line[0])
-                    line[1] = self.eval(line[1])
-                    result = line[0] != line[1]
+                    if self.if_stack[-1]:
+                        result = not self.is_eq(self.eval(line[7:-1]))
+                    else:
+                        result = False
                     self.else_stack.append(result)
                     self.if_stack.append(self.if_stack[-1] & result)
                 elif line.startswith('ifdef '):
@@ -78,16 +92,23 @@ class ParseContext:
                     self.if_stack.append(self.if_stack[-1] & result)
                 elif line.startswith('else ifeq ('):
                     assert line.endswith(')')
-                    line = line[11:-1].split(',')
-                    assert len(line) == 2
-                    line[0] = self.eval(line[0])
-                    line[1] = self.eval(line[1])
-                    result = line[0] == line[1]
+                    if self.if_stack[-1]:
+                        result = self.is_eq(self.eval(line[11:-1]))
+                    else:
+                        result = False
+                    self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1] and result
+                    self.else_stack[-1] = self.else_stack[-1] or result
+                elif line.startswith('else ifneq ('):
+                    assert line.endswith(')')
+                    if self.if_stack[-1]:
+                        result = not self.is_eq(self.eval(line[12:-1]))
+                    else:
+                        result = False
                     self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1] and result
                     self.else_stack[-1] = self.else_stack[-1] or result
                 elif line == 'else':
                     self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1]
-                elif line_split[0] == 'endif':
+                elif line == 'endif':
                     self.else_stack.pop()
                     self.if_stack.pop()
                 elif line.startswith('include '):
@@ -103,6 +124,10 @@ class ParseContext:
                     if self.if_stack[-1]:
                         print('ERROR: %s' % line)
                         exit(1)
+                elif len(line_split) >= 2 and line_split[1] == '=':
+                    if self.if_stack[-1]:
+                        value = ' '.join(line_split[2:])
+                        self.variables[line_split[0]] = value
                 elif len(line_split) >= 2 and line_split[1] == ':=':
                     if self.if_stack[-1]:
                         value = self.eval(' '.join(line_split[2:]))
