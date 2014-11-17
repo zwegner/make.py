@@ -61,13 +61,21 @@ class ParseContext:
         with open(path) as f:
             line_prefix = ''
             for line in f:
+                # Handle continuations first, before anything else
                 line = line_prefix + line.strip()
-                if not line or line.startswith('#'):
-                    continue
                 if line.endswith('\\'):
                     line_prefix = line[:-1] + ' '
                     continue
                 line_prefix = ''
+
+                # Remove comments and ignore blank lines
+                i = line.find('#')
+                if i >= 0:
+                    line = line[:i]
+                if not line:
+                    continue
+
+                line_strip = line.strip()
                 line_split = line.split()
                 if line.startswith('ifeq ('):
                     assert line.endswith(')')
@@ -92,7 +100,7 @@ class ParseContext:
                     self.if_stack.append(self.if_stack[-1] & result)
                 elif line.startswith('else ifeq ('):
                     assert line.endswith(')')
-                    if self.if_stack[-1]:
+                    if self.if_stack[-2]:
                         result = self.is_eq(self.eval(line[11:-1]))
                     else:
                         result = False
@@ -100,7 +108,7 @@ class ParseContext:
                     self.else_stack[-1] = self.else_stack[-1] or result
                 elif line.startswith('else ifneq ('):
                     assert line.endswith(')')
-                    if self.if_stack[-1]:
+                    if self.if_stack[-2]:
                         result = not self.is_eq(self.eval(line[12:-1]))
                     else:
                         result = False
@@ -108,7 +116,7 @@ class ParseContext:
                     self.else_stack[-1] = self.else_stack[-1] or result
                 elif line == 'else':
                     self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1]
-                elif line == 'endif':
+                elif line_strip == 'endif':
                     self.else_stack.pop()
                     self.if_stack.pop()
                 elif line.startswith('include '):
@@ -145,15 +153,16 @@ class ParseContext:
         assert not line_prefix
         assert initial_if_stack_depth == len(self.if_stack)
 
-parser = argparse.ArgumentParser()
-parser.add_argument('-d', action='append', dest='defines', default=[], help='set a variable')
-parser.add_argument('-f', '--file', help='input file to parse')
-args = parser.parse_args()
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-d', action='append', dest='defines', default=[], help='set a variable')
+    parser.add_argument('-f', '--file', help='input file to parse')
+    args = parser.parse_args()
 
-ctx = ParseContext()
-for d in args.defines:
-    (k, v) = d.split('=', 1)
-    ctx.variables[k] = v
-ctx.parse(args.file)
-for (k, v) in sorted(ctx.variables.items()):
-    print('%s: %r' % (k, v))
+    ctx = ParseContext()
+    for d in args.defines:
+        (k, v) = d.split('=', 1)
+        ctx.variables[k] = v
+    ctx.parse(args.file)
+    for (k, v) in sorted(ctx.variables.items()):
+        print('%s: %r' % (k, v))
