@@ -23,6 +23,7 @@
 # when you need to convert existing makefiles into rules.py files.
 
 import argparse
+import glob
 import os
 
 class ParseContext:
@@ -48,6 +49,16 @@ class ParseContext:
             elif name.startswith('addprefix '):
                 (prefix, names) = name[10:].split(',', 1)
                 value = ' '.join(prefix + x for x in names.split())
+            elif name.startswith('addsuffix '):
+                (suffix, names) = name[10:].split(',', 1)
+                value = ' '.join(x + suffix for x in names.split())
+            elif name.startswith('notdir '):
+                value = name[7:]
+                index = value.rfind('/')
+                if index >= 0:
+                    value = value[index+1:]
+            elif name.startswith('wildcard '):
+                value = ' '.join(glob.glob(name[9:]))
             else:
                 value = self.variables[name]
             expr = expr[:i] + value + expr[j+1:]
