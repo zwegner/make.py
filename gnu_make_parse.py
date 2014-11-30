@@ -46,6 +46,11 @@ class ParseContext:
                 (pattern, text) = name[7:].split(',', 1)
                 pattern = pattern.split()
                 value = ' '.join(x for x in text.split() if x in pattern)
+            elif name.startswith('filter-out '):
+                # XXX patterns can use %
+                (pattern, text) = name[11:].split(',', 1)
+                pattern = pattern.split()
+                value = ' '.join(x for x in text.split() if x not in pattern)
             elif name.startswith('addprefix '):
                 (prefix, names) = name[10:].split(',', 1)
                 value = ' '.join(prefix + x for x in names.split())
@@ -108,6 +113,11 @@ class ParseContext:
                 elif line.startswith('ifdef '):
                     line = line[6:]
                     result = self.variables.get(line, '') != ''
+                    self.else_stack.append(result)
+                    self.if_stack.append(self.if_stack[-1] & result)
+                elif line.startswith('ifndef '):
+                    line = line[7:]
+                    result = self.variables.get(line, '') == ''
                     self.else_stack.append(result)
                     self.if_stack.append(self.if_stack[-1] & result)
                 elif line.startswith('else ifeq ('):
