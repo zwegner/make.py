@@ -25,6 +25,9 @@
 import argparse
 import glob
 import os
+import re
+
+re_variable_assign = re.compile(r'(\S+)\s*(=|:=|\+=|\?=)\s*(.*)')
 
 class ParseContext:
     def __init__(self):
@@ -72,6 +75,10 @@ class ParseContext:
         expr = expr.split(',')
         assert len(expr) == 2
         return expr[0] == expr[1]
+
+    def missing_include(self, path):
+        print('ERROR: include file %r does not exist' % path)
+        exit(1)
 
     def parse(self, path):
         initial_if_stack_depth = len(self.if_stack)
@@ -152,31 +159,34 @@ class ParseContext:
                         if os.path.exists(include_path):
                             self.parse(include_path)
                         else:
-                            print('WARNING: include file %r does not exist' % include_path)
+                            self.missing_include(include_path)
                 elif line.startswith('$(error '):
                     assert line.endswith(')')
                     line = line[8:-1]
                     if self.if_stack[-1]:
                         print('ERROR: %s' % line)
                         exit(1)
-                elif len(line_split) >= 2 and line_split[1] == '=':
-                    if self.if_stack[-1]:
-                        value = ' '.join(line_split[2:])
-                        self.variables[line_split[0]] = value
-                elif len(line_split) >= 2 and line_split[1] == ':=':
-                    if self.if_stack[-1]:
-                        value = self.eval(' '.join(line_split[2:]))
-                        self.variables[line_split[0]] = value
-                elif len(line_split) >= 2 and line_split[1] == '+=':
-                    if self.if_stack[-1]:
-                        value = self.eval(' '.join(line_split[2:]))
-                        if line_split[0] in self.variables:
-                            self.variables[line_split[0]] += ' ' + value
-                        else:
-                            self.variables[line_split[0]] = value
                 else:
-                    print('ERROR: could not parse %r' % line)
-                    exit(1)
+                    m = re_variable_assign.match(line)
+                    if m is not None:
+                        (name, assign, value) = m.groups()
+                        if self.if_stack[-1]:
+                            if assign == ':=':
+                                self.variables[name] = self.eval(value)
+                            elif assign == '+=':
+                                if name in self.variables:
+                                    self.variables[name] += ' ' + self.eval(value)
+                                else:
+                                    self.variables[name] = self.eval(value)
+                            elif assign == '?=':
+                                if self.variables.get(name, '') == '':
+                                    self.variables[name] = value
+                            else:
+                                assert assign == '='
+                                self.variables[name] = value
+                    else:
+                        print('ERROR: could not parse %r' % line)
+                        exit(1)
         assert not line_prefix
         assert initial_if_stack_depth == len(self.if_stack)
 
