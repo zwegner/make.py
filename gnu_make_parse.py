@@ -44,6 +44,9 @@ class ParseContext:
             name = expr[i+2:j]
             if name.startswith('sort '):
                 value = ' '.join(sorted(set(name[5:].split())))
+            elif name.startswith('findstring '):
+                (pattern, text) = name[11:].split(',', 1)
+                value = pattern if pattern in text else ''
             elif name.startswith('filter '):
                 # XXX patterns can use %
                 (pattern, text) = name[7:].split(',', 1)
