@@ -83,6 +83,10 @@ class ParseContext:
         print('ERROR: include file %r does not exist' % path)
         exit(1)
 
+    def parse_error(self, line):
+        print('ERROR: could not parse %r' % line)
+        exit(1)
+
     def parse(self, path):
         initial_if_stack_depth = len(self.if_stack)
         with open(path) as f:
@@ -188,8 +192,7 @@ class ParseContext:
                                 assert assign == '='
                                 self.variables[name] = value
                     else:
-                        print('ERROR: could not parse %r' % line)
-                        exit(1)
+                        self.parse_error(line)
         assert not line_prefix
         assert initial_if_stack_depth == len(self.if_stack)
 
