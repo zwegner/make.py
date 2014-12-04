@@ -77,7 +77,7 @@ class ParseContext:
     def is_eq(self, expr):
         expr = expr.split(',')
         assert len(expr) == 2
-        return expr[0] == expr[1]
+        return expr[0] == expr[1].lstrip()
 
     def missing_include(self, path):
         print('ERROR: include file %r does not exist' % path)
