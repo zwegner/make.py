@@ -31,9 +31,11 @@ re_variable_assign = re.compile(r'(\S+)\s*(=|:=|\+=|\?=)\s*(.*)')
 
 class ParseContext:
     def __init__(self):
+        self.macros = {}
         self.variables = {}
         self.if_stack = [True]
         self.else_stack = []
+        self.cur_macro = None
 
     def eval(self, expr):
         while True:
@@ -87,6 +89,110 @@ class ParseContext:
         print('ERROR: could not parse %r' % line)
         exit(1)
 
+    def parse_line(self, line):
+        # Remove comments and ignore blank lines
+        i = line.find('#')
+        if i >= 0:
+            line = line[:i]
+        if not line:
+            return
+
+        line_strip = line.strip()
+        line_split = line.split()
+        if line.startswith('define '):
+            self.cur_macro = line[7:]
+            assert self.cur_macro not in self.macros
+            self.macros[self.cur_macro] = []
+        elif line.startswith('ifeq ('):
+            assert line.endswith(')')
+            if self.if_stack[-1]:
+                result = self.is_eq(self.eval(line[6:-1]))
+            else:
+                result = False
+            self.else_stack.append(result)
+            self.if_stack.append(self.if_stack[-1] & result)
+        elif line.startswith('ifneq ('):
+            assert line.endswith(')')
+            if self.if_stack[-1]:
+                result = not self.is_eq(self.eval(line[7:-1]))
+            else:
+                result = False
+            self.else_stack.append(result)
+            self.if_stack.append(self.if_stack[-1] & result)
+        elif line.startswith('ifdef '):
+            line = line[6:]
+            result = self.variables.get(line, '') != ''
+            self.else_stack.append(result)
+            self.if_stack.append(self.if_stack[-1] & result)
+        elif line.startswith('ifndef '):
+            line = line[7:]
+            result = self.variables.get(line, '') == ''
+            self.else_stack.append(result)
+            self.if_stack.append(self.if_stack[-1] & result)
+        elif line.startswith('else ifeq ('):
+            assert line.endswith(')')
+            if self.if_stack[-2]:
+                result = self.is_eq(self.eval(line[11:-1]))
+            else:
+                result = False
+            self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1] and result
+            self.else_stack[-1] = self.else_stack[-1] or result
+        elif line.startswith('else ifneq ('):
+            assert line.endswith(')')
+            if self.if_stack[-2]:
+                result = not self.is_eq(self.eval(line[12:-1]))
+            else:
+                result = False
+            self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1] and result
+            self.else_stack[-1] = self.else_stack[-1] or result
+        elif line.startswith('else ifdef '):
+            line = line[11:]
+            result = self.variables.get(line, '') != ''
+            self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1] and result
+            self.else_stack[-1] = self.else_stack[-1] or result
+        elif line == 'else':
+            self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1]
+        elif line_strip == 'endif':
+            self.else_stack.pop()
+            self.if_stack.pop()
+        elif line.startswith('include '):
+            if self.if_stack[-1]:
+                include_path = self.eval(line[8:])
+                if os.path.exists(include_path):
+                    self.parse(include_path)
+                else:
+                    self.missing_include(include_path)
+        elif line.startswith('$(error '):
+            assert line.endswith(')')
+            line = line[8:-1]
+            if self.if_stack[-1]:
+                print('ERROR: %s' % line)
+                exit(1)
+        elif line.startswith('$(eval $('):
+            assert line.endswith('))')
+            for line in self.macros[line[9:-2]]:
+                self.parse_line(line)
+        else:
+            m = re_variable_assign.match(line)
+            if m is not None:
+                (name, assign, value) = m.groups()
+                if self.if_stack[-1]:
+                    if assign == ':=':
+                        self.variables[name] = self.eval(value)
+                    elif assign == '+=':
+                        if name in self.variables:
+                            self.variables[name] += ' ' + self.eval(value)
+                        else:
+                            self.variables[name] = self.eval(value)
+                    elif assign == '?=':
+                        if self.variables.get(name, '') == '':
+                            self.variables[name] = value
+                    else:
+                        assert assign == '='
+                        self.variables[name] = value
+            else:
+                self.parse_error(line)
+
     def parse(self, path):
         initial_if_stack_depth = len(self.if_stack)
         with open(path) as f:
@@ -99,100 +205,15 @@ class ParseContext:
                     continue
                 line_prefix = ''
 
-                # Remove comments and ignore blank lines
-                i = line.find('#')
-                if i >= 0:
-                    line = line[:i]
-                if not line:
+                # Are we inside a macro definition?
+                if self.cur_macro is not None:
+                    if line == 'endef':
+                        self.cur_macro = None
+                    else:
+                        self.macros[self.cur_macro].append(line)
                     continue
 
-                line_strip = line.strip()
-                line_split = line.split()
-                if line.startswith('ifeq ('):
-                    assert line.endswith(')')
-                    if self.if_stack[-1]:
-                        result = self.is_eq(self.eval(line[6:-1]))
-                    else:
-                        result = False
-                    self.else_stack.append(result)
-                    self.if_stack.append(self.if_stack[-1] & result)
-                elif line.startswith('ifneq ('):
-                    assert line.endswith(')')
-                    if self.if_stack[-1]:
-                        result = not self.is_eq(self.eval(line[7:-1]))
-                    else:
-                        result = False
-                    self.else_stack.append(result)
-                    self.if_stack.append(self.if_stack[-1] & result)
-                elif line.startswith('ifdef '):
-                    line = line[6:]
-                    result = self.variables.get(line, '') != ''
-                    self.else_stack.append(result)
-                    self.if_stack.append(self.if_stack[-1] & result)
-                elif line.startswith('ifndef '):
-                    line = line[7:]
-                    result = self.variables.get(line, '') == ''
-                    self.else_stack.append(result)
-                    self.if_stack.append(self.if_stack[-1] & result)
-                elif line.startswith('else ifeq ('):
-                    assert line.endswith(')')
-                    if self.if_stack[-2]:
-                        result = self.is_eq(self.eval(line[11:-1]))
-                    else:
-                        result = False
-                    self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1] and result
-                    self.else_stack[-1] = self.else_stack[-1] or result
-                elif line.startswith('else ifneq ('):
-                    assert line.endswith(')')
-                    if self.if_stack[-2]:
-                        result = not self.is_eq(self.eval(line[12:-1]))
-                    else:
-                        result = False
-                    self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1] and result
-                    self.else_stack[-1] = self.else_stack[-1] or result
-                elif line.startswith('else ifdef '):
-                    line = line[11:]
-                    result = self.variables.get(line, '') != ''
-                    self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1] and result
-                    self.else_stack[-1] = self.else_stack[-1] or result
-                elif line == 'else':
-                    self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1]
-                elif line_strip == 'endif':
-                    self.else_stack.pop()
-                    self.if_stack.pop()
-                elif line.startswith('include '):
-                    if self.if_stack[-1]:
-                        include_path = self.eval(line[8:])
-                        if os.path.exists(include_path):
-                            self.parse(include_path)
-                        else:
-                            self.missing_include(include_path)
-                elif line.startswith('$(error '):
-                    assert line.endswith(')')
-                    line = line[8:-1]
-                    if self.if_stack[-1]:
-                        print('ERROR: %s' % line)
-                        exit(1)
-                else:
-                    m = re_variable_assign.match(line)
-                    if m is not None:
-                        (name, assign, value) = m.groups()
-                        if self.if_stack[-1]:
-                            if assign == ':=':
-                                self.variables[name] = self.eval(value)
-                            elif assign == '+=':
-                                if name in self.variables:
-                                    self.variables[name] += ' ' + self.eval(value)
-                                else:
-                                    self.variables[name] = self.eval(value)
-                            elif assign == '?=':
-                                if self.variables.get(name, '') == '':
-                                    self.variables[name] = value
-                            else:
-                                assert assign == '='
-                                self.variables[name] = value
-                    else:
-                        self.parse_error(line)
+                self.parse_line(line)
         assert not line_prefix
         assert initial_if_stack_depth == len(self.if_stack)
 
