@@ -72,6 +72,13 @@ class ParseContext:
                     value = value[index+1:]
             elif name.startswith('wildcard '):
                 value = ' '.join(glob.glob(name[9:]))
+            elif name.startswith('or '):
+                for arg in name[3:].split(','):
+                    if arg:
+                        value = arg
+                        break
+                else:
+                    value = ''
             else:
                 value = self.variables[name]
             expr = expr[:i] + value + expr[j+1:]
@@ -90,18 +97,10 @@ class ParseContext:
         exit(1)
 
     def parse_line(self, line):
-        # Remove comments and ignore blank lines
-        i = line.find('#')
-        if i >= 0:
-            line = line[:i]
-        if not line:
-            return
-
         line_strip = line.strip()
         line_split = line.split()
         if line.startswith('define '):
             self.cur_macro = line[7:]
-            assert self.cur_macro not in self.macros
             self.macros[self.cur_macro] = []
         elif line.startswith('ifeq ('):
             assert line.endswith(')')
@@ -205,9 +204,16 @@ class ParseContext:
                     continue
                 line_prefix = ''
 
+                # Remove comments and ignore blank lines
+                i = line.find('#')
+                if i >= 0:
+                    line = line[:i]
+                if not line:
+                    continue
+
                 # Are we inside a macro definition?
                 if self.cur_macro is not None:
-                    if line == 'endef':
+                    if line.strip() == 'endef':
                         self.cur_macro = None
                     else:
                         self.macros[self.cur_macro].append(line)
