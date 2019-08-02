@@ -23,6 +23,7 @@
 # when you need to convert existing makefiles into rules.py files.
 
 import argparse
+import collections
 import glob
 import os
 import re
@@ -300,29 +301,64 @@ if __name__ == '__main__':
     with open('out_rules.py', 'wt') as f:
         f.write('def rules(ctx):\n')
 
+        # Clean up rules
+        rules = []
         for (rule_path, rule_deps, rule_cmds) in ctx.rules:
-            if not rule_cmds:
-                continue
             rule_deps = shlex.split(rule_deps)
             rule_cmds = [shlex.split(cmd) for cmd in rule_cmds]
             # Ignore - at the beginning of commands
             rule_cmds = [[cmd[0].lstrip('-')] + cmd[1:] for cmd in rule_cmds]
             # Ruthlessly remove @echo commands
             rule_cmds = [cmd for cmd in rule_cmds if cmd[0] != '@echo']
+            rules.append((rule_path, rule_deps, rule_cmds))
+
+        # Collect, for each argument, a list all commands that use that
+        # argument, so we can deduplicate
+        args_used = collections.defaultdict(list)
+        for (rule_path, rule_deps, rule_cmds) in rules:
+            for idx, cmd in enumerate(rule_cmds):
+                for arg in cmd[1:]:
+                    if arg.startswith('-') and arg not in {'-o', '-O'}:
+                        args_used[arg].append((rule_path, idx))
+
+        # Create the inverse index: for each set of commands that use an
+        # argument, accumulate all the arguments that are used by that
+        # same set of commands
+        args_used_by = collections.defaultdict(list)
+        for arg, cmds in args_used.items():
+            if len(cmds) < 5:
+                continue
+            args_used_by[tuple(cmds)].append(arg)
+
+        # Write out argument list for deduplicated variables
+        var_set_idx = {}
+        for idx, (cmds, args) in enumerate(args_used_by.items()):
+            f.write('    _vars_%s = %r\n' % (idx, args))
+            for arg in args:
+                var_set_idx[arg] = idx
+
+        for (rule_path, rule_deps, rule_cmds) in rules:
+            if not rule_cmds:
+                continue
 
             f.write('    target = %r\n' % rule_path)
             f.write('    rule_deps = %r\n' % rule_deps)
             f.write('    rule_cmds = [\n')
             for cmd in rule_cmds:
                 nice_cmd = []
+                var_sets_used = set()
                 for arg in cmd:
                     if arg == '$@':
                         nice_cmd.append('target')
                     elif arg == '$<':
                         nice_cmd.append('*rule_deps')
+                    elif arg in var_set_idx:
+                        var_sets_used.add(var_set_idx[arg])
                     else:
                         assert not arg.startswith('$'), arg
                         nice_cmd.append(repr(arg))
+                for v in var_sets_used:
+                    nice_cmd.append('*_vars_%s' % v)
                 f.write('        [%s],\n' % ',\n          '.join(nice_cmd))
             f.write('    ]\n')
             f.write('    ctx.add_rule(target, rule_deps, rule_cmds)\n')
