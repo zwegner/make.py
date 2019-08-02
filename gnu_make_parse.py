@@ -27,6 +27,9 @@ import glob
 import os
 import re
 
+# This is fairly restrictive, just to be safe for now
+re_rule = re.compile(r'^([-\w./]+):(.*)$')
+
 re_variable_assign = re.compile(r'(\S+)\s*(=|:=|\+=|\?=)\s*(.*)')
 
 class ParseContext:
@@ -34,6 +37,7 @@ class ParseContext:
         self.info_stack = []
         self.macros = {}
         self.variables = {}
+        self.current_rule = None
         self.if_stack = [True]
         self.else_stack = []
         self.cur_macro = None
@@ -103,6 +107,18 @@ class ParseContext:
     def parse_line(self, line):
         line_strip = line.strip()
         line_split = line.split()
+
+        # First, check if we're inside a rule
+        if self.current_rule:
+            # If the line starts with a tab, this line is a command for the rule
+            if line.startswith('\t'):
+                (_, _, rule_cmds) = self.current_rule
+                rule_cmds.append(line[1:])
+                return
+            # Otherwise, we're done with the rule. Handle the rule and parse
+            # this line normally.
+            self.flush_rule()
+
         if line.startswith('define '):
             self.cur_macro = line[7:]
             self.macros[self.cur_macro] = []
@@ -195,7 +211,21 @@ class ParseContext:
                         assert assign == '='
                         self.variables[name] = value
             else:
-                self.error('could not parse %r' % line)
+                m = re_rule.match(line)
+                if m is not None:
+                    assert not self.current_rule
+                    rule_path, rule_deps = m.groups()
+                    rule_deps = self.eval(rule_deps)
+                    self.current_rule = (rule_path, rule_deps, [])
+                else:
+                    self.error('could not parse %r' % line)
+
+    def flush_rule(self):
+        if not self.current_rule:
+            return
+        (rule_path, rule_deps, rule_cmds) = self.current_rule
+        print('RULE:', self.current_rule)
+        self.current_rule = None
 
     def parse(self, path):
         initial_if_stack_depth = len(self.if_stack)
@@ -206,8 +236,14 @@ class ParseContext:
             for line_nb, line in enumerate(f):
                 # Set line number for error messages
                 info[1] = line_nb + 1
+
+                # Remove whitespace from the right side (not the left since
+                # we need to preserve tabs)
+                line = line.rstrip()
+
                 # Handle continuations first, before anything else
-                line = line_prefix + line.strip()
+                if line_prefix:
+                    line = line_prefix + line.lstrip()
                 if line.endswith('\\'):
                     line_prefix = line[:-1] + ' '
                     continue
@@ -229,6 +265,10 @@ class ParseContext:
                     continue
 
                 self.parse_line(line)
+
+            # Clean up if we're inside a rule definition at the end
+            self.flush_rule()
+
         assert not line_prefix
         assert initial_if_stack_depth == len(self.if_stack)
 
