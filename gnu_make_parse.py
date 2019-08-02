@@ -31,6 +31,7 @@ re_variable_assign = re.compile(r'(\S+)\s*(=|:=|\+=|\?=)\s*(.*)')
 
 class ParseContext:
     def __init__(self):
+        self.info_stack = []
         self.macros = {}
         self.variables = {}
         self.if_stack = [True]
@@ -88,13 +89,16 @@ class ParseContext:
         assert len(expr) == 2
         return expr[0] == expr[1].lstrip()
 
-    def missing_include(self, path):
-        print('ERROR: include file %r does not exist' % path)
+    def print_message(self, prefix, message):
+        (path, line_nb) = self.info_stack[-1]
+        print('%s [%s:%s]: %s' % (prefix, path, line_nb, message))
+
+    def error(self, message):
+        self.print_message('ERROR', message)
         exit(1)
 
-    def parse_error(self, line):
-        print('ERROR: could not parse %r' % line)
-        exit(1)
+    def warning(self, message):
+        self.print_message('WARNING', message)
 
     def parse_line(self, line):
         line_strip = line.strip()
@@ -160,13 +164,12 @@ class ParseContext:
                 if os.path.exists(include_path):
                     self.parse(include_path)
                 else:
-                    self.missing_include(include_path)
+                    self.error('include file %r does not exist' % include_path)
         elif line.startswith('$(error '):
             assert line.endswith(')')
             line = line[8:-1]
             if self.if_stack[-1]:
-                print('ERROR: %s' % line)
-                exit(1)
+                self.error(line)
         elif line.startswith('$(eval $('):
             assert line.endswith('))')
             for line in self.macros[line[9:-2]]:
@@ -190,13 +193,17 @@ class ParseContext:
                         assert assign == '='
                         self.variables[name] = value
             else:
-                self.parse_error(line)
+                self.error('could not parse %r' % line)
 
     def parse(self, path):
         initial_if_stack_depth = len(self.if_stack)
+        info = [path, 0]
+        self.info_stack.append(info)
         with open(path) as f:
             line_prefix = ''
-            for line in f:
+            for line_nb, line in enumerate(f):
+                # Set line number for error messages
+                info[1] = line_nb + 1
                 # Handle continuations first, before anything else
                 line = line_prefix + line.strip()
                 if line.endswith('\\'):
@@ -222,6 +229,8 @@ class ParseContext:
                 self.parse_line(line)
         assert not line_prefix
         assert initial_if_stack_depth == len(self.if_stack)
+
+        self.info_stack.pop()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
