@@ -21,7 +21,6 @@
 
 import errno
 import hashlib
-import imp
 import itertools
 import multiprocessing
 import os
@@ -37,6 +36,13 @@ import sys
 import threading
 import time
 from optparse import OptionParser
+
+# The imp module is deprecated, but importlib doesn't have the functionality we need.
+# Or rather, it might, but the documentation doesn't make it clear. So just suppress the warning.
+import warnings
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    import imp
 
 visited = set()
 enqueued = set()
