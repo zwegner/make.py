@@ -26,6 +26,7 @@ import argparse
 import glob
 import os
 import re
+import shlex
 
 # This is fairly restrictive, just to be safe for now
 re_rule = re.compile(r'^([-\w./]+):(.*)$')
@@ -38,6 +39,7 @@ class ParseContext:
         self.macros = {}
         self.variables = {}
         self.current_rule = None
+        self.rules = []
         self.if_stack = [True]
         self.else_stack = []
         self.cur_macro = None
@@ -113,7 +115,7 @@ class ParseContext:
             # If the line starts with a tab, this line is a command for the rule
             if line.startswith('\t'):
                 (_, _, rule_cmds) = self.current_rule
-                rule_cmds.append(line[1:])
+                rule_cmds.append(self.eval(line[1:]))
                 return
             # Otherwise, we're done with the rule. Handle the rule and parse
             # this line normally.
@@ -223,8 +225,7 @@ class ParseContext:
     def flush_rule(self):
         if not self.current_rule:
             return
-        (rule_path, rule_deps, rule_cmds) = self.current_rule
-        print('RULE:', self.current_rule)
+        self.rules.append(self.current_rule)
         self.current_rule = None
 
     def parse(self, path):
@@ -285,5 +286,35 @@ if __name__ == '__main__':
         (k, v) = d.split('=', 1)
         ctx.variables[k] = v
     ctx.parse(args.file)
-    for (k, v) in sorted(ctx.variables.items()):
-        print('%s: %r' % (k, v))
+    #for (k, v) in sorted(ctx.variables.items()):
+    #    print('%s: %r' % (k, v))
+
+    with open('out_rules.py', 'wt') as f:
+        f.write('def rules(ctx):\n')
+
+        for (rule_path, rule_deps, rule_cmds) in ctx.rules:
+            if not rule_cmds:
+                continue
+            rule_deps = shlex.split(rule_deps)
+            rule_cmds = [shlex.split(cmd) for cmd in rule_cmds]
+            # Ignore - at the beginning of commands
+            rule_cmds = [[cmd[0].lstrip('-')] + cmd[1:] for cmd in rule_cmds]
+            # Ruthlessly remove @echo commands
+            rule_cmds = [cmd for cmd in rule_cmds if cmd[0] != '@echo']
+
+            f.write('    target = %r\n' % rule_path)
+            f.write('    rule_deps = %r\n' % rule_deps)
+            f.write('    rule_cmds = [\n')
+            for cmd in rule_cmds:
+                nice_cmd = []
+                for arg in cmd:
+                    if arg == '$@':
+                        nice_cmd.append('target')
+                    elif arg == '$<':
+                        nice_cmd.append('*rule_deps')
+                    else:
+                        assert not arg.startswith('$'), arg
+                        nice_cmd.append(repr(arg))
+                f.write('        [%s],\n' % ',\n          '.join(nice_cmd))
+            f.write('    ]\n')
+            f.write('    ctx.add_rule(target, rule_deps, rule_cmds)\n')
