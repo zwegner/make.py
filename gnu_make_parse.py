@@ -37,7 +37,7 @@ class ParseContext:
     def __init__(self):
         self.info_stack = []
         self.macros = {}
-        self.variables = {}
+        self.variables = {'MAKE': 'make'}
         self.current_rule = None
         self.rules = []
         self.if_stack = [True]
