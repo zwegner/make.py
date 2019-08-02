@@ -53,6 +53,8 @@ class ParseContext:
             name = expr[i+2:j]
             if name.startswith('sort '):
                 value = ' '.join(sorted(set(name[5:].split())))
+            elif name.startswith('strip '):
+                value = name[6:].strip()
             elif name.startswith('findstring '):
                 (pattern, text) = name[11:].split(',', 1)
                 value = pattern if pattern in text else ''
