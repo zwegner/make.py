@@ -34,7 +34,8 @@ re_rule = re.compile(r'^([-\w./]+):(.*)$')
 re_variable_assign = re.compile(r'(\S+)\s*(=|:=|\+=|\?=)\s*(.*)')
 
 class ParseContext:
-    def __init__(self):
+    def __init__(self, enable_warnings=True):
+        self.enable_warnings = enable_warnings
         self.info_stack = []
         self.macros = {}
         self.variables = {'MAKE': 'make'}
@@ -89,6 +90,8 @@ class ParseContext:
                 else:
                     value = ''
             else:
+                if name not in self.variables:
+                    self.warning('variable %r does not exist' % name)
                 value = self.variables.get(name, '')
             expr = expr[:i] + value + expr[j+1:]
 
@@ -106,7 +109,8 @@ class ParseContext:
         exit(1)
 
     def warning(self, message):
-        self.print_message('WARNING', message)
+        if self.enable_warnings:
+            self.print_message('WARNING', message)
 
     def parse_line(self, line):
         line_strip = line.strip()
@@ -280,10 +284,12 @@ class ParseContext:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', action='append', dest='defines', default=[], help='set a variable')
+    parser.add_argument('--no-warnings', action='store_false', dest='warnings',
+            help='disable all warnings during generation')
     parser.add_argument('-f', '--file', help='input file to parse')
     args = parser.parse_args()
 
-    ctx = ParseContext()
+    ctx = ParseContext(enable_warnings=args.warnings)
     for d in args.defines:
         (k, v) = d.split('=', 1)
         ctx.variables[k] = v
