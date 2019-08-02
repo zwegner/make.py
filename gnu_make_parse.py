@@ -85,7 +85,7 @@ class ParseContext:
                 else:
                     value = ''
             else:
-                value = self.variables[name]
+                value = self.variables.get(name, '')
             expr = expr[:i] + value + expr[j+1:]
 
     def is_eq(self, expr):
