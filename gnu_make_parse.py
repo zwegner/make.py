@@ -158,13 +158,15 @@ class ParseContext:
         elif line_strip == 'endif':
             self.else_stack.pop()
             self.if_stack.pop()
-        elif line.startswith('include '):
+        elif line.startswith('include ') or line.startswith('-include '):
             if self.if_stack[-1]:
-                include_path = self.eval(line[8:])
+                include_path = self.eval(line[8:].lstrip())
                 if os.path.exists(include_path):
                     self.parse(include_path)
-                else:
+                elif not line.startswith('-'):
                     self.error('include file %r does not exist' % include_path)
+                else:
+                    self.warning('include file %r does not exist' % include_path)
         elif line.startswith('$(error '):
             assert line.endswith(')')
             line = line[8:-1]
