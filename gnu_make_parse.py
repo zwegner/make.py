@@ -282,11 +282,22 @@ class ParseContext:
 
         self.info_stack.pop()
 
-def format_list(l, indent=0):
+def format_list(l, indent=0, use_repr=False):
+    if use_repr:
+        l = map(repr, l)
     indent = ' ' * indent
     bump = ' ' * 4
     sep = ',\n' + indent + bump
     return '[\n%s%s\n%s]' % (indent + bump, sep.join(l), indent)
+
+def format_dict(d, indent=0, use_repr=False):
+    d = d.items()
+    if use_repr:
+        d = ((repr(k), repr(v)) for k, v in d)
+    indent = ' ' * indent
+    bump = ' ' * 4
+    sep = ',\n' + indent + bump
+    return '{\n%s%s\n%s}' % (indent + bump, sep.join('%s: %s' % (k, v) for k, v in d), indent)
 
 def rule_key(rule):
     (target_dir, target_name, src_dir, rule_deps, rule_cmds) = rule
@@ -441,16 +452,22 @@ if __name__ == '__main__':
                 key = rule_key(rule)
                 rule_map[key][target_dir].append(target_name)
 
-            f.write('    dir_mapping = %r\n' % dir_mapping)
+            # Prune the rule map to only include rules that are duplicated
+            rule_map = {key: target_map for key, target_map in rule_map.items()
+                if sum(len(srcs) for srcs in target_map.values()) > 1}
 
-            # Find all rules that are used more than once, and write out some for loops to
-            # process all the targets that use the same rule
-            for key, target_map in rule_map.items():
-                (rule_deps, rule_cmds) = key
-                if sum(len(srcs) for srcs in target_map.values()) > 1:
+            if rule_map:
+                dir_mapping = {target_dir: src_dir for target_dir, src_dir in dir_mapping.items()
+                    if any(target_dir in target_map for key, target_map in rule_map.items())}
+                f.write('    dir_mapping = %s\n' % format_dict(dir_mapping, indent=4, use_repr=True))
+
+                # Find all rules that are used more than once, and write out some for loops to
+                # process all the targets that use the same rule
+                for key, target_map in rule_map.items():
+                    (rule_deps, rule_cmds) = key
                     skip_rules.add(key)
                     f.write('\n')
-                    f.write('    target_map = %r\n' % dict(target_map))
+                    f.write('    target_map = %s\n' % format_dict(target_map, indent=4, use_repr=True))
                     f.write('    for target_dir, targets in target_map.items():\n')
                     f.write('        src_dir = dir_mapping[target_dir]\n')
                     f.write('        for target_name in targets:\n')
