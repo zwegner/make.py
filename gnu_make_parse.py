@@ -384,14 +384,57 @@ if __name__ == '__main__':
             new_rules.append((target, rule_deps, new_cmds))
         rules = new_rules
 
+        # Detect formulaic source/destination directories
+        dir_mapping = {}
+        dir_blacklist = set()
+        new_rules = []
         for (target, rule_deps, rule_cmds) in rules:
+            target_dir, target_name = os.path.split(target)
+            if not target_dir:
+                target_dir = '.'
+
+            # Check if the target/deps follow a simple pattern
+            for dep in rule_deps:
+                dep_dir, dep_name = os.path.split(dep)
+                if target_dir not in dir_mapping:
+                    dir_mapping[target_dir] = dep_dir
+                elif dir_mapping[target_dir] != dep_dir:
+                    dir_blacklist.add(target_dir)
+
+            # Pattern not met, just use all the literal dependencies
+            if target_dir in dir_blacklist:
+                src_dir = None
+                new_deps = [repr(d) for d in rule_deps]
+            # Otherwise, replace the dependency list with one in terms of a target directory
+            else:
+                src_dir = dir_mapping[target_dir]
+                new_deps = []
+                for dep in rule_deps:
+                    dep_dir, dep_name = os.path.split(dep)
+                    assert dep_dir == src_dir
+                    # Try to put the dep path in terms of the target
+                    prefix = target_name[:-2]
+                    if dep_name.startswith(prefix):
+                        suffix = dep_name.replace(prefix, '', 1)
+                        new_deps.append('"%%s/%%s" %% (src_dir, target_name[:-2] + %r)' % suffix)
+                    else:
+                        new_deps.append('"%%s/%%s" %% (src_dir, %r)' % dep_name)
+
+            new_rules.append((target_dir, target_name, src_dir, new_deps, rule_cmds))
+        rules = new_rules
+
+        # Output all the processed rules
+        for (target_dir, target_name, src_dir, rule_deps, rule_cmds) in rules:
             if not rule_cmds:
                 continue
 
             f.write('\n')
-            f.write('    # %s\n' % target)
-            f.write('    target = %r\n' % target)
-            f.write('    rule_deps = %r\n' % rule_deps)
+            f.write('    # %s/%s\n' % (target_dir, target_name))
+            f.write('    target_dir = %r\n' % target_dir)
+            f.write('    target_name = %r\n' % target_name)
+            f.write('    target = "%s/%s" % (target_dir, target_name)\n')
+            f.write('    src_dir = %r\n' % src_dir)
+            f.write('    rule_deps = %s\n' % format_list(rule_deps, indent=4))
             f.write('    rule_cmds = [\n')
             for cmd in rule_cmds:
                 f.write('        %s,\n' % format_list(cmd, indent=8))
