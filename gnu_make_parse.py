@@ -223,9 +223,9 @@ class ParseContext:
                 m = re_rule.match(line)
                 if m is not None:
                     assert not self.current_rule
-                    rule_path, rule_deps = m.groups()
+                    target, rule_deps = m.groups()
                     rule_deps = self.eval(rule_deps)
-                    self.current_rule = (rule_path, rule_deps, [])
+                    self.current_rule = (target, rule_deps, [])
                 else:
                     self.error('could not parse %r' % line)
 
@@ -303,23 +303,23 @@ if __name__ == '__main__':
 
         # Clean up rules
         rules = []
-        for (rule_path, rule_deps, rule_cmds) in ctx.rules:
+        for (target, rule_deps, rule_cmds) in ctx.rules:
             rule_deps = shlex.split(rule_deps)
             rule_cmds = [shlex.split(cmd) for cmd in rule_cmds]
             # Ignore - at the beginning of commands
             rule_cmds = [[cmd[0].lstrip('-')] + cmd[1:] for cmd in rule_cmds]
             # Ruthlessly remove @echo commands
             rule_cmds = [cmd for cmd in rule_cmds if cmd[0] != '@echo']
-            rules.append((rule_path, rule_deps, rule_cmds))
+            rules.append((target, rule_deps, rule_cmds))
 
         # Collect, for each argument, a list all commands that use that
         # argument, so we can deduplicate
         args_used = collections.defaultdict(list)
-        for (rule_path, rule_deps, rule_cmds) in rules:
+        for (target, rule_deps, rule_cmds) in rules:
             for idx, cmd in enumerate(rule_cmds):
                 for arg in cmd[1:]:
                     if arg.startswith('-') and arg not in {'-o', '-O'}:
-                        args_used[arg].append((rule_path, idx))
+                        args_used[arg].append((target, idx))
 
         # Create the inverse index: for each set of commands that use an
         # argument, accumulate all the arguments that are used by that
@@ -337,11 +337,13 @@ if __name__ == '__main__':
             for arg in args:
                 var_set_idx[arg] = idx
 
-        for (rule_path, rule_deps, rule_cmds) in rules:
+        for (target, rule_deps, rule_cmds) in rules:
             if not rule_cmds:
                 continue
 
-            f.write('    target = %r\n' % rule_path)
+            f.write('\n')
+            f.write('    # %s\n' % target)
+            f.write('    target = %r\n' % target)
             f.write('    rule_deps = %r\n' % rule_deps)
             f.write('    rule_cmds = [\n')
             for cmd in rule_cmds:
