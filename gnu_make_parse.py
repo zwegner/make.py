@@ -288,6 +288,10 @@ def format_list(l, indent=0):
     sep = ',\n' + indent + bump
     return '[\n%s%s\n%s]' % (indent + bump, sep.join(l), indent)
 
+def rule_key(rule):
+    (target_dir, target_name, src_dir, rule_deps, rule_cmds) = rule
+    return (tuple(rule_deps), tuple(tuple(c) for c in rule_cmds))
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', action='append', dest='defines', default=[], help='set a variable')
@@ -423,9 +427,47 @@ if __name__ == '__main__':
             new_rules.append((target_dir, target_name, src_dir, new_deps, rule_cmds))
         rules = new_rules
 
+        # Detect rules that differ only in target, so we can output loops instead of individual rules
+        dir_mapping = {td: sd for td, sd in dir_mapping.items() if td not in dir_blacklist}
+        skip_rules = set()
+        if dir_mapping:
+            # Collect all distinct rules
+            rule_map = collections.defaultdict(lambda: collections.defaultdict(list))
+            for rule in rules:
+                (target_dir, target_name, src_dir, rule_deps, rule_cmds) = rule
+                if target_dir in dir_blacklist:
+                    continue
+                assert dir_mapping[target_dir] == src_dir
+                key = rule_key(rule)
+                rule_map[key][target_dir].append(target_name)
+
+            f.write('    dir_mapping = %r\n' % dir_mapping)
+
+            # Find all rules that are used more than once, and write out some for loops to
+            # process all the targets that use the same rule
+            for key, target_map in rule_map.items():
+                (rule_deps, rule_cmds) = key
+                if sum(len(srcs) for srcs in target_map.values()) > 1:
+                    skip_rules.add(key)
+                    f.write('\n')
+                    f.write('    target_map = %r\n' % dict(target_map))
+                    f.write('    for target_dir, targets in target_map.items():\n')
+                    f.write('        src_dir = dir_mapping[target_dir]\n')
+                    f.write('        for target_name in targets:\n')
+                    f.write('            target = "%s/%s" % (target_dir, target_name)\n')
+                    f.write('            rule_deps = %s\n' % format_list(rule_deps, indent=12))
+                    f.write('            rule_cmds = [\n')
+                    for cmd in rule_cmds:
+                        f.write('                %s,\n' % format_list(cmd, indent=16))
+                    f.write('            ]\n')
+                    f.write('            ctx.add_rule(target, rule_deps, rule_cmds)\n')
+
         # Output all the processed rules
-        for (target_dir, target_name, src_dir, rule_deps, rule_cmds) in rules:
+        for rule in rules:
+            (target_dir, target_name, src_dir, rule_deps, rule_cmds) = rule
             if not rule_cmds:
+                continue
+            if rule_key(rule) in skip_rules:
                 continue
 
             f.write('\n')
