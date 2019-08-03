@@ -333,9 +333,50 @@ if __name__ == '__main__':
         # Write out argument list for deduplicated variables
         var_set_idx = {}
         for idx, (cmds, args) in enumerate(args_used_by.items()):
-            f.write('    _vars_%s = %r\n' % (idx, args))
+            f.write('    _vars_%s = [%s]\n' % (idx, ',\n      '.join(map(repr, args))))
             for arg in args:
                 var_set_idx[arg] = idx
+
+        # Preprocess arguments for variable replacements etc. so we can deduplicate
+        # commands in build rules
+        new_rules = []
+        for (target, rule_deps, rule_cmds) in rules:
+            new_cmds = []
+            for cmd in rule_cmds:
+                nice_cmd = []
+                add_d_file = False
+                d_file_path = None
+                var_sets_used = set()
+                for arg in cmd:
+                    if arg == '$@':
+                        nice_cmd.append('target')
+                    elif arg == '$<':
+                        nice_cmd.append('*rule_deps')
+                    elif arg.startswith('-MT') and arg[3:] == target:
+                        add_d_file = True
+                    elif arg.startswith('-MF'):
+                        d_file_path = arg[3:]
+                    elif arg in var_set_idx:
+                        var_sets_used.add(var_set_idx[arg])
+                    else:
+                        assert not arg.startswith('$'), arg
+                        nice_cmd.append(repr(arg))
+
+                for v in var_sets_used:
+                    nice_cmd.append('*_vars_%s' % v)
+
+                if add_d_file:
+                    nice_cmd.append('"-MT%s" % target')
+                    assert d_file_path
+                    if d_file_path[:-1] == target[:-1]:
+                        nice_cmd.append('"-MF%s.d" % target[:-2]')
+                    else:
+                        nice_cmd.append('"-MF%s"' % shlex.quote(d_file_path))
+
+                new_cmds.append(nice_cmd)
+
+            new_rules.append((target, rule_deps, new_cmds))
+        rules = new_rules
 
         for (target, rule_deps, rule_cmds) in rules:
             if not rule_cmds:
@@ -347,20 +388,6 @@ if __name__ == '__main__':
             f.write('    rule_deps = %r\n' % rule_deps)
             f.write('    rule_cmds = [\n')
             for cmd in rule_cmds:
-                nice_cmd = []
-                var_sets_used = set()
-                for arg in cmd:
-                    if arg == '$@':
-                        nice_cmd.append('target')
-                    elif arg == '$<':
-                        nice_cmd.append('*rule_deps')
-                    elif arg in var_set_idx:
-                        var_sets_used.add(var_set_idx[arg])
-                    else:
-                        assert not arg.startswith('$'), arg
-                        nice_cmd.append(repr(arg))
-                for v in var_sets_used:
-                    nice_cmd.append('*_vars_%s' % v)
-                f.write('        [%s],\n' % ',\n          '.join(nice_cmd))
+                f.write('        [%s],\n' % ',\n          '.join(cmd))
             f.write('    ]\n')
             f.write('    ctx.add_rule(target, rule_deps, rule_cmds)\n')
