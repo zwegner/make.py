@@ -282,6 +282,12 @@ class ParseContext:
 
         self.info_stack.pop()
 
+def format_list(l, indent=0):
+    indent = ' ' * indent
+    bump = ' ' * 4
+    sep = ',\n' + indent + bump
+    return '[\n%s%s\n%s]' % (indent + bump, sep.join(l), indent)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', action='append', dest='defines', default=[], help='set a variable')
@@ -333,7 +339,7 @@ if __name__ == '__main__':
         # Write out argument list for deduplicated variables
         var_set_idx = {}
         for idx, (cmds, args) in enumerate(args_used_by.items()):
-            f.write('    _vars_%s = [%s]\n' % (idx, ',\n      '.join(map(repr, args))))
+            f.write('    _vars_%s = %s\n' % (idx, format_list(map(repr, args), indent=4)))
             for arg in args:
                 var_set_idx[arg] = idx
 
@@ -388,6 +394,6 @@ if __name__ == '__main__':
             f.write('    rule_deps = %r\n' % rule_deps)
             f.write('    rule_cmds = [\n')
             for cmd in rule_cmds:
-                f.write('        [%s],\n' % ',\n          '.join(cmd))
+                f.write('        %s,\n' % format_list(cmd, indent=8))
             f.write('    ]\n')
             f.write('    ctx.add_rule(target, rule_deps, rule_cmds)\n')
