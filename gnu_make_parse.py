@@ -290,18 +290,16 @@ def format_list(l, indent=0, use_repr=False):
     if use_repr:
         l = map(repr, l)
     indent = ' ' * indent
-    bump = ' ' * 4
-    sep = ',\n' + indent + bump
-    return '[\n%s%s\n%s]' % (indent + bump, sep.join(l), indent)
+    items = ['%s    %s,\n' % (indent, item) for item in l]
+    return '[\n%s%s]' % (''.join(items), indent)
 
 def format_dict(d, indent=0, use_repr=False):
     d = d.items()
     if use_repr:
         d = ((repr(k), repr(v)) for k, v in d)
     indent = ' ' * indent
-    bump = ' ' * 4
-    sep = ',\n' + indent + bump
-    return '{\n%s%s\n%s}' % (indent + bump, sep.join('%s: %s' % (k, v) for k, v in d), indent)
+    items = ['%s    %s: %s,\n' % (indent, k, v) for k, v in d]
+    return '{\n%s%s}' % (''.join(items), indent)
 
 def rule_key(rule):
     return (tuple(rule.deps), tuple(tuple(c) for c in rule.cmds), rule.succ_list_idx, rule.pred_list_idx)
@@ -361,7 +359,7 @@ if __name__ == '__main__':
         # Write out argument list for deduplicated variables
         var_set_idx = {}
         for idx, (cmds, args) in enumerate(args_used_by.items()):
-            f.write('    _vars_%s = %s\n' % (idx, format_list(map(repr, args), indent=4)))
+            f.write('    _vars_%s = %s\n' % (idx, format_list(args, indent=4, use_repr=True)))
             for arg in args:
                 var_set_idx[arg] = idx
 
@@ -528,10 +526,9 @@ if __name__ == '__main__':
                 continue
 
             f.write('\n')
-            f.write('    # %s/%s\n' % (rule.target_dir, rule.target_name))
-            f.write('    target_dir = %r\n' % rule.target_dir)
-            f.write('    target_name = %r\n' % rule.target_name)
-            f.write('    target = "%s/%s" % (target_dir, target_name)\n')
+            target = '%s/%s' % (rule.target_dir, rule.target_name)
+            f.write('    # %s\n' % target)
+            f.write('    target = %r\n' % target)
             if rule.src_dir is not None:
                 f.write('    src_dir = %r\n' % rule.src_dir)
             write_rule(f, rule, indent=4)
