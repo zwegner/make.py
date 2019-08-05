@@ -310,6 +310,8 @@ if __name__ == '__main__':
     parser.add_argument('--no-warnings', action='store_false', dest='warnings',
             help='disable all warnings during generation')
     parser.add_argument('-f', '--file', help='input file to parse')
+    parser.add_argument('-o', '--output', default='out_rules.py',
+            help='path to output rules.py file')
     args = parser.parse_args()
 
     ctx = ParseContext(enable_warnings=args.warnings)
@@ -320,7 +322,7 @@ if __name__ == '__main__':
     #for (k, v) in sorted(ctx.variables.items()):
     #    print('%s: %r' % (k, v))
 
-    with open('out_rules.py', 'wt') as f:
+    with open(args.output, 'wt') as f:
         f.write('def rules(ctx):\n')
 
         # Clean up rules
