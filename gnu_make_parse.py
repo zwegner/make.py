@@ -440,32 +440,44 @@ if __name__ == '__main__':
             rule.deps = new_deps
             del rule.target
 
+        def write_rule(f, rule, indent):
+            ind = ' ' * indent
+            f.write(ind + 'src_dir = %r\n' % rule.src_dir)
+            f.write(ind + 'rule_deps = %s\n' % format_list(rule.deps, indent=indent))
+            f.write(ind + 'rule_cmds = [\n')
+            for cmd in rule.cmds:
+                f.write(ind + '    %s,\n' % format_list(cmd, indent=indent+4))
+            f.write(ind + ']\n')
+            f.write(ind + 'ctx.add_rule(target, rule_deps, rule_cmds)\n')
+
         # Detect rules that differ only in target, so we can output loops instead of individual rules
         dir_mapping = {td: sd for td, sd in dir_mapping.items() if td not in dir_blacklist}
         skip_rules = set()
         if dir_mapping:
             # Collect all distinct rules
-            rule_map = collections.defaultdict(lambda: collections.defaultdict(list))
+            rule_srcs = collections.defaultdict(lambda: collections.defaultdict(list))
+            rule_map = {}
             for rule in rules:
                 if rule.target_dir in dir_blacklist:
                     continue
                 assert dir_mapping[rule.target_dir] == rule.src_dir
                 key = rule_key(rule)
-                rule_map[key][rule.target_dir].append(rule.target_name)
+                rule_map[key] = rule
+                rule_srcs[key][rule.target_dir].append(rule.target_name)
 
             # Prune the rule map to only include rules that are duplicated
-            rule_map = {key: target_map for key, target_map in rule_map.items()
+            rule_srcs = {key: target_map for key, target_map in rule_srcs.items()
                 if sum(len(srcs) for srcs in target_map.values()) > 1}
 
-            if rule_map:
+            if rule_srcs:
                 dir_mapping = {target_dir: src_dir for target_dir, src_dir in dir_mapping.items()
-                    if any(target_dir in target_map for key, target_map in rule_map.items())}
+                    if any(target_dir in target_map for key, target_map in rule_srcs.items())}
                 f.write('    dir_mapping = %s\n' % format_dict(dir_mapping, indent=4, use_repr=True))
 
                 # Find all rules that are used more than once, and write out some for loops to
                 # process all the targets that use the same rule
-                for key, target_map in rule_map.items():
-                    (rule_deps, rule_cmds) = key
+                for key, target_map in rule_srcs.items():
+                    rule = rule_map[key]
                     skip_rules.add(key)
                     f.write('\n')
                     f.write('    target_map = %s\n' % format_dict(target_map, indent=4, use_repr=True))
@@ -473,12 +485,7 @@ if __name__ == '__main__':
                     f.write('        src_dir = dir_mapping[target_dir]\n')
                     f.write('        for target_name in targets:\n')
                     f.write('            target = "%s/%s" % (target_dir, target_name)\n')
-                    f.write('            rule_deps = %s\n' % format_list(rule_deps, indent=12))
-                    f.write('            rule_cmds = [\n')
-                    for cmd in rule_cmds:
-                        f.write('                %s,\n' % format_list(cmd, indent=16))
-                    f.write('            ]\n')
-                    f.write('            ctx.add_rule(target, rule_deps, rule_cmds)\n')
+                    write_rule(f, rule, indent=12)
 
         # Output all the processed rules
         for rule in rules:
@@ -492,10 +499,4 @@ if __name__ == '__main__':
             f.write('    target_dir = %r\n' % rule.target_dir)
             f.write('    target_name = %r\n' % rule.target_name)
             f.write('    target = "%s/%s" % (target_dir, target_name)\n')
-            f.write('    src_dir = %r\n' % src_dir)
-            f.write('    rule_deps = %s\n' % format_list(rule.deps, indent=4))
-            f.write('    rule_cmds = [\n')
-            for cmd in rule.cmds:
-                f.write('        %s,\n' % format_list(cmd, indent=8))
-            f.write('    ]\n')
-            f.write('    ctx.add_rule(target, rule_deps, rule_cmds)\n')
+            write_rule(f, rule, indent=4)
