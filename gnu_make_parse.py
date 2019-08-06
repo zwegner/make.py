@@ -281,6 +281,22 @@ class ParseContext:
 
         self.info_stack.pop()
 
+    def get_cleaned_rules(self):
+        rules = []
+        for rule in self.rules:
+            rule.target = os.path.normpath(rule.target)
+            rule.deps = shlex.split(rule.deps)
+            rule.deps = [os.path.normpath(dep) for dep in rule.deps]
+            rule.cmds = [shlex.split(cmd) for cmd in rule.cmds]
+            # Ignore - at the beginning of commands
+            rule.cmds = [[cmd[0].lstrip('-')] + cmd[1:] for cmd in rule.cmds]
+            # Ruthlessly remove @echo commands
+            rule.cmds = [cmd for cmd in rule.cmds if cmd[0] != '@echo']
+            if not rule.cmds:
+                continue
+            rules.append(rule)
+        return rules
+
 # Simple object for storing rule stuff as attributes. We don't need any functionality really.
 class Rule:
     def __init__(self, **kwargs):
@@ -304,6 +320,179 @@ def format_dict(d, indent=0, use_repr=False):
 def rule_key(rule):
     return (tuple(rule.deps), tuple(tuple(c) for c in rule.cmds), rule.succ_list_idx, rule.pred_list_idx)
 
+def get_args_used_map(rules):
+    # Collect, for each argument, a list all commands that use that
+    # argument, so we can deduplicate
+    args_used = collections.defaultdict(list)
+    for rule in rules:
+        for idx, cmd in enumerate(rule.cmds):
+            for arg in cmd[1:]:
+                if arg.startswith('-') and arg not in {'-o', '-O'}:
+                    args_used[arg].append((rule.target, idx))
+
+    # Create the inverse index: for each set of commands that use an
+    # argument, accumulate all the arguments that are used by that
+    # same set of commands
+    args_used_by = collections.defaultdict(list)
+    for arg, cmds in args_used.items():
+        if len(cmds) < 5:
+            continue
+        args_used_by[tuple(cmds)].append(arg)
+
+    # Write out argument list for deduplicated variables
+    var_set_idx = {}
+    for idx, (cmds, args) in enumerate(args_used_by.items()):
+        for arg in args:
+            var_set_idx[arg] = idx
+
+    return args_used_by, var_set_idx
+
+def process_rule_cmds(rules, var_set_idx):
+    # Preprocess arguments for variable replacements etc. so we can deduplicate
+    # commands in build rules
+    for rule in rules:
+        new_cmds = []
+        for cmd in rule.cmds:
+            nice_cmd = []
+            add_d_file = False
+            d_file_path = None
+            var_sets_used = set()
+            for arg in cmd:
+                if arg == '$@':
+                    nice_cmd.append('target')
+                elif arg == '$<':
+                    nice_cmd.append('*rule_deps')
+                elif arg.startswith('-MT') and arg[3:] == rule.target:
+                    add_d_file = True
+                elif arg.startswith('-MF'):
+                    d_file_path = arg[3:]
+                elif arg in var_set_idx:
+                    var_sets_used.add(var_set_idx[arg])
+                else:
+                    assert not arg.startswith('$'), arg
+                    nice_cmd.append(repr(arg))
+
+            for v in var_sets_used:
+                nice_cmd.append('*_vars_%s' % v)
+
+            if add_d_file:
+                nice_cmd.append('"-MT%s" % target')
+                assert d_file_path
+                if d_file_path[:-1] == rule.target[:-1]:
+                    nice_cmd.append('"-MF%s.d" % target[:-2]')
+                else:
+                    nice_cmd.append('"-MF%s"' % shlex.quote(d_file_path))
+
+            new_cmds.append(nice_cmd)
+        rule.cmds = new_cmds
+
+def process_rule_links(rules):
+    # Find sources/sinks of each target, so we can maintain lists for cleaner output
+    for rule in rules:
+        rule.preds = []
+        rule.succs = []
+        rule.succ_list_idx = None
+        rule.pred_list_idx = None
+    for rule in rules:
+        for other in rules:
+            if rule is other:
+                continue
+            if any(dep == rule.target for dep in other.deps):
+                rule.succs.append(other)
+                other.preds.append(rule)
+
+    src_lists = []
+    for rule in rules:
+        if len(rule.preds) > 1:
+            rule.pred_list_idx = len(src_lists)
+            for other in rule.preds:
+                other.succ_list_idx = rule.pred_list_idx
+            src_lists.append(rule)
+
+            # Filter out dependencies that are part of the src list
+            rule.deps = [dep for dep in rule.deps if not any(
+                dep == other.target for other in rule.preds)]
+
+    return src_lists
+
+def process_rule_dirs(rules):
+    # Detect formulaic source/destination directories
+    dir_mapping = {}
+    dir_blacklist = set()
+    for rule in rules:
+        target_dir, target_name = os.path.split(rule.target)
+        if not target_dir:
+            target_dir = '.'
+
+        # Check if the target/deps follow a simple pattern
+        for dep in rule.deps:
+            dep_dir, dep_name = os.path.split(dep)
+            if target_dir not in dir_mapping:
+                dir_mapping[target_dir] = dep_dir
+            elif dir_mapping[target_dir] != dep_dir:
+                dir_blacklist.add(target_dir)
+
+        # Pattern not met, just use all the literal dependencies
+        src_dir = None
+        new_deps = []
+        if target_dir in dir_blacklist:
+            new_deps = [repr(d) for d in rule.deps]
+        # Otherwise, replace the dependency list with one in terms of a target directory
+        elif rule.deps:
+            src_dir = dir_mapping[target_dir]
+            for dep in rule.deps:
+                dep_dir, dep_name = os.path.split(dep)
+                assert dep_dir == src_dir
+                # Try to put the dep path in terms of the target
+                prefix = target_name[:-2]
+                if dep_name.startswith(prefix):
+                    suffix = dep_name.replace(prefix, '', 1)
+                    new_deps.append('"%%s/%%s" %% (src_dir, target_name[:-2] + %r)' % suffix)
+                else:
+                    new_deps.append('"%%s/%%s" %% (src_dir, %r)' % dep_name)
+
+        rule.target_dir = target_dir
+        rule.target_name = target_name
+        rule.src_dir = src_dir
+        rule.deps = new_deps
+        del rule.target
+
+    return dir_mapping, dir_blacklist
+
+def deduplicate_rules(rules, dir_mapping, dir_blacklist):
+    # Detect rules that differ only in target, so we can output loops instead of individual rules
+    dir_mapping = {td: sd for td, sd in dir_mapping.items() if td not in dir_blacklist}
+    rule_srcs = collections.defaultdict(lambda: collections.defaultdict(list))
+    rule_map = {}
+    if dir_mapping:
+        # Collect all distinct rules
+        for rule in rules:
+            if rule.target_dir in dir_blacklist:
+                continue
+            assert not rule.deps or dir_mapping[rule.target_dir] == rule.src_dir, rule.deps
+            key = rule_key(rule)
+            rule_map[key] = rule
+            rule_srcs[key][rule.target_dir].append(rule.target_name)
+
+        # Prune the rule map to only include rules that are duplicated
+        rule_srcs = {key: target_map for key, target_map in rule_srcs.items()
+            if sum(len(srcs) for srcs in target_map.values()) > 1}
+
+    return rule_map, rule_srcs
+
+def write_rule(f, rule, indent):
+    ind = ' ' * indent
+    f.write(ind + 'rule_deps = %s\n' % format_list(rule.deps, indent=indent))
+    if rule.pred_list_idx is not None:
+        f.write(ind + 'rule_deps += _src_list_%s\n' % rule.pred_list_idx)
+    f.write(ind + 'rule_cmds = [\n')
+    for cmd in rule.cmds:
+        f.write(ind + '    %s,\n' % format_list(cmd, indent=indent+4))
+    f.write(ind + ']\n')
+    f.write(ind + 'ctx.add_rule(target, rule_deps, rule_cmds)\n')
+    if rule.succ_list_idx is not None:
+        f.write(ind + '_src_list_%s.append(target)\n' % rule.succ_list_idx)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', action='append', dest='defines', default=[], help='set a variable')
@@ -319,208 +508,58 @@ if __name__ == '__main__':
         (k, v) = d.split('=', 1)
         ctx.variables[k] = v
     ctx.parse(args.file)
-    #for (k, v) in sorted(ctx.variables.items()):
-    #    print('%s: %r' % (k, v))
 
+    # Process the parsed rules with a series of cleaning/simplifying/deduplicating steps:
+
+    # Normalize paths, parse command lines, remove echos, etc.
+    rules = ctx.get_cleaned_rules()
+
+    # Find all arguments used, so we can build lists of common args
+    args_used_by, var_set_idx = get_args_used_map(rules)
+
+    # Reformulate commands in terms of variables
+    process_rule_cmds(rules, var_set_idx)
+
+    # Find all rules that have outputs used by other rules, to dynamically build dependency lists
+    src_lists = process_rule_links(rules)
+
+    # Find patterns with dependency/target directories (for now, just find any directories
+    # where every target only depends on files in the same source directory)
+    dir_mapping, dir_blacklist = process_rule_dirs(rules)
+
+    # Now that we've simplified the rules a bunch, find all the rules that have the same
+    # command/dependency structure, but differ only in source directory and target name
+    rule_map, rule_srcs = deduplicate_rules(rules, dir_mapping, dir_blacklist)
+
+    # Write out the processed rules into the output rules.py file
     with open(args.output, 'wt') as f:
         f.write('def rules(ctx):\n')
 
-        # Clean up rules
-        rules = []
-        for rule in ctx.rules:
-            rule.target = os.path.normpath(rule.target)
-            rule.deps = shlex.split(rule.deps)
-            rule.deps = [os.path.normpath(dep) for dep in rule.deps]
-            rule.cmds = [shlex.split(cmd) for cmd in rule.cmds]
-            # Ignore - at the beginning of commands
-            rule.cmds = [[cmd[0].lstrip('-')] + cmd[1:] for cmd in rule.cmds]
-            # Ruthlessly remove @echo commands
-            rule.cmds = [cmd for cmd in rule.cmds if cmd[0] != '@echo']
-            if not rule.cmds:
-                continue
-            rules.append(rule)
-
-        # Collect, for each argument, a list all commands that use that
-        # argument, so we can deduplicate
-        args_used = collections.defaultdict(list)
-        for rule in rules:
-            for idx, cmd in enumerate(rule.cmds):
-                for arg in cmd[1:]:
-                    if arg.startswith('-') and arg not in {'-o', '-O'}:
-                        args_used[arg].append((rule.target, idx))
-
-        # Create the inverse index: for each set of commands that use an
-        # argument, accumulate all the arguments that are used by that
-        # same set of commands
-        args_used_by = collections.defaultdict(list)
-        for arg, cmds in args_used.items():
-            if len(cmds) < 5:
-                continue
-            args_used_by[tuple(cmds)].append(arg)
-
-        # Write out argument list for deduplicated variables
-        var_set_idx = {}
         for idx, (cmds, args) in enumerate(args_used_by.items()):
             f.write('    _vars_%s = %s\n' % (idx, format_list(args, indent=4, use_repr=True)))
-            for arg in args:
-                var_set_idx[arg] = idx
 
-        # Preprocess arguments for variable replacements etc. so we can deduplicate
-        # commands in build rules
-        for rule in rules:
-            new_cmds = []
-            for cmd in rule.cmds:
-                nice_cmd = []
-                add_d_file = False
-                d_file_path = None
-                var_sets_used = set()
-                for arg in cmd:
-                    if arg == '$@':
-                        nice_cmd.append('target')
-                    elif arg == '$<':
-                        nice_cmd.append('*rule_deps')
-                    elif arg.startswith('-MT') and arg[3:] == rule.target:
-                        add_d_file = True
-                    elif arg.startswith('-MF'):
-                        d_file_path = arg[3:]
-                    elif arg in var_set_idx:
-                        var_sets_used.add(var_set_idx[arg])
-                    else:
-                        assert not arg.startswith('$'), arg
-                        nice_cmd.append(repr(arg))
+        for rule in src_lists:
+            f.write('    _src_list_%s = []\n' % rule.pred_list_idx)
 
-                for v in var_sets_used:
-                    nice_cmd.append('*_vars_%s' % v)
-
-                if add_d_file:
-                    nice_cmd.append('"-MT%s" % target')
-                    assert d_file_path
-                    if d_file_path[:-1] == rule.target[:-1]:
-                        nice_cmd.append('"-MF%s.d" % target[:-2]')
-                    else:
-                        nice_cmd.append('"-MF%s"' % shlex.quote(d_file_path))
-
-                new_cmds.append(nice_cmd)
-            rule.cmds = new_cmds
-
-        # Find sources/sinks of each target, so we can maintain lists for cleaner output
-        for rule in rules:
-            rule.preds = []
-            rule.succs = []
-            rule.succ_list_idx = None
-            rule.pred_list_idx = None
-        for rule in rules:
-            for other in rules:
-                if rule is other:
-                    continue
-                if any(dep == rule.target for dep in other.deps):
-                    rule.succs.append(other)
-                    other.preds.append(rule)
-
-        src_lists = []
-        for rule in rules:
-            if len(rule.preds) > 1:
-                rule.pred_list_idx = len(src_lists)
-                for other in rule.preds:
-                    other.succ_list_idx = rule.pred_list_idx
-                f.write('    _src_list_%s = []\n' % rule.pred_list_idx)
-                src_lists.append(rule)
-
-                # Filter out dependencies that are part of the src list
-                rule.deps = [dep for dep in rule.deps if not any(
-                    dep == other.target for other in rule.preds)]
-
-        # Detect formulaic source/destination directories
-        dir_mapping = {}
-        dir_blacklist = set()
-        new_rules = []
-        for rule in rules:
-            target_dir, target_name = os.path.split(rule.target)
-            if not target_dir:
-                target_dir = '.'
-
-            # Check if the target/deps follow a simple pattern
-            for dep in rule.deps:
-                dep_dir, dep_name = os.path.split(dep)
-                if target_dir not in dir_mapping:
-                    dir_mapping[target_dir] = dep_dir
-                elif dir_mapping[target_dir] != dep_dir:
-                    dir_blacklist.add(target_dir)
-
-            # Pattern not met, just use all the literal dependencies
-            src_dir = None
-            new_deps = []
-            if target_dir in dir_blacklist:
-                new_deps = [repr(d) for d in rule.deps]
-            # Otherwise, replace the dependency list with one in terms of a target directory
-            elif rule.deps:
-                src_dir = dir_mapping[target_dir]
-                for dep in rule.deps:
-                    dep_dir, dep_name = os.path.split(dep)
-                    assert dep_dir == src_dir
-                    # Try to put the dep path in terms of the target
-                    prefix = target_name[:-2]
-                    if dep_name.startswith(prefix):
-                        suffix = dep_name.replace(prefix, '', 1)
-                        new_deps.append('"%%s/%%s" %% (src_dir, target_name[:-2] + %r)' % suffix)
-                    else:
-                        new_deps.append('"%%s/%%s" %% (src_dir, %r)' % dep_name)
-
-            rule.target_dir = target_dir
-            rule.target_name = target_name
-            rule.src_dir = src_dir
-            rule.deps = new_deps
-            del rule.target
-
-        def write_rule(f, rule, indent):
-            ind = ' ' * indent
-            f.write(ind + 'rule_deps = %s\n' % format_list(rule.deps, indent=indent))
-            if rule.pred_list_idx is not None:
-                f.write(ind + 'rule_deps += _src_list_%s\n' % rule.pred_list_idx)
-            f.write(ind + 'rule_cmds = [\n')
-            for cmd in rule.cmds:
-                f.write(ind + '    %s,\n' % format_list(cmd, indent=indent+4))
-            f.write(ind + ']\n')
-            f.write(ind + 'ctx.add_rule(target, rule_deps, rule_cmds)\n')
-            if rule.succ_list_idx is not None:
-                f.write(ind + '_src_list_%s.append(target)\n' % rule.succ_list_idx)
-
-        # Detect rules that differ only in target, so we can output loops instead of individual rules
-        dir_mapping = {td: sd for td, sd in dir_mapping.items() if td not in dir_blacklist}
+        # Write out lists of duplicated rules
         skip_rules = set()
-        if dir_mapping:
-            # Collect all distinct rules
-            rule_srcs = collections.defaultdict(lambda: collections.defaultdict(list))
-            rule_map = {}
-            for rule in rules:
-                if rule.target_dir in dir_blacklist:
-                    continue
-                assert not rule.deps or dir_mapping[rule.target_dir] == rule.src_dir, rule.deps
-                key = rule_key(rule)
-                rule_map[key] = rule
-                rule_srcs[key][rule.target_dir].append(rule.target_name)
+        if rule_srcs:
+            dir_mapping = {target_dir: src_dir for target_dir, src_dir in dir_mapping.items()
+                if any(target_dir in target_map for key, target_map in rule_srcs.items())}
+            f.write('    dir_mapping = %s\n' % format_dict(dir_mapping, indent=4, use_repr=True))
 
-            # Prune the rule map to only include rules that are duplicated
-            rule_srcs = {key: target_map for key, target_map in rule_srcs.items()
-                if sum(len(srcs) for srcs in target_map.values()) > 1}
-
-            if rule_srcs:
-                dir_mapping = {target_dir: src_dir for target_dir, src_dir in dir_mapping.items()
-                    if any(target_dir in target_map for key, target_map in rule_srcs.items())}
-                f.write('    dir_mapping = %s\n' % format_dict(dir_mapping, indent=4, use_repr=True))
-
-                # Find all rules that are used more than once, and write out some for loops to
-                # process all the targets that use the same rule
-                for key, target_map in rule_srcs.items():
-                    rule = rule_map[key]
-                    skip_rules.add(key)
-                    f.write('\n')
-                    f.write('    target_map = %s\n' % format_dict(target_map, indent=4, use_repr=True))
-                    f.write('    for target_dir, targets in target_map.items():\n')
-                    f.write('        src_dir = dir_mapping[target_dir]\n')
-                    f.write('        for target_name in targets:\n')
-                    f.write('            target = "%s/%s" % (target_dir, target_name)\n')
-                    write_rule(f, rule, indent=12)
+            # Find all rules that are used more than once, and write out some for loops to
+            # process all the targets that use the same rule
+            for key, target_map in rule_srcs.items():
+                rule = rule_map[key]
+                skip_rules.add(key)
+                f.write('\n')
+                f.write('    target_map = %s\n' % format_dict(target_map, indent=4, use_repr=True))
+                f.write('    for target_dir, targets in target_map.items():\n')
+                f.write('        src_dir = dir_mapping[target_dir]\n')
+                f.write('        for target_name in targets:\n')
+                f.write('            target = "%s/%s" % (target_dir, target_name)\n')
+                write_rule(f, rule, indent=12)
 
         # Output all the processed rules
         for rule in rules:
