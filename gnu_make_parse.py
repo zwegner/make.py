@@ -30,9 +30,62 @@ import re
 import shlex
 
 # This is fairly restrictive, just to be safe for now
-re_rule = re.compile(r'^([-\w./]+):(.*)$')
+re_rule = re.compile(r'^((?:[-\w./%]|\\ )+):(.*)$')
 
 re_variable_assign = re.compile(r'(\S+)\s*(=|:=|\+=|\?=)\s*(.*)')
+
+re_variable_subst = re.compile(r'%([.\w]*)=%([.\w]*)')
+
+# A few "classes" for storing unevaluated variables and the like, that are returned
+# from parse_expr(). This gives us a unified representation of strings/variables
+# that can be evaluated either later during parsing or at runtime (i.e. translated
+# into Python code and inserted into the rules.py file we output).
+
+def Var(value):
+    return ('var', value)
+
+def UnpackList(value):
+    return ('unpack', value)
+
+def Glob():
+    return ('Glob',)
+
+def SuffixReplace(value, old, new):
+    return ('suffix-replace', value, old, new)
+
+def Join(*args):
+    # Collapse consecutive strings
+    r = []
+    for arg in args:
+        if isinstance(arg, str):
+            if not arg:
+                continue
+            elif r and isinstance(r[-1], str):
+                r[-1] = r[-1] + arg
+            else:
+                r.append(arg)
+        else:
+            r.append(arg)
+    if len(r) == 1:
+        return r[0]
+    return ('join', *r)
+
+# Simple object for storing info on parsed rules. We don't need any functionality really.
+class Rule:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+# Kinda dumb tokenization function--like str.find() but finds the first of multiple tokens
+def find_first(s, tokens):
+    first_token = first_idx = None
+    for token in tokens:
+        idx = s.find(token)
+        if idx == -1:
+            continue
+        if first_idx is None or idx < first_idx:
+            first_idx = idx
+            first_token = token
+    return (first_token, first_idx)
 
 class ParseContext:
     def __init__(self, enable_warnings=True):
@@ -46,14 +99,58 @@ class ParseContext:
         self.else_stack = []
         self.cur_macro = None
 
-    def eval(self, expr):
+    def parse_expr(self, expr):
+        result = []
         while True:
-            i = expr.rfind('$(')
-            if i < 0:
-                return expr
-            j = expr.find(')', i)
-            name = expr[i+2:j]
-            if name.startswith('sort '):
+            # Find the first special character
+            (token, i) = find_first(expr, ('%', '$'))
+            if i is None:
+                break
+
+            # Add everything before the dollar to the result list
+            result.append(expr[:i])
+
+            # Translate % into a glob
+            if token == '%':
+                result.append(Glob())
+                expr = expr[i+1:]
+                continue
+
+            assert token == '$'
+
+            # Get the name of the variable/expression being evaluated (single letter or parenthesized)
+            # Also, reset expr to be the remainder of the line for the next loop iteration.
+            if expr[i+1] == '(':
+                j = expr.find(')', i)
+                name = expr[i+2:j]
+                expr = expr[j+1:]
+                # XXX
+                if '$' in name:
+                    self.error('recursive expressions not supported yet')
+            else:
+                name = expr[i+1]
+                expr = expr[i+2:]
+
+            # Check for substitutions, like $(SRCS:%.c=%.o)
+            subst = None
+            if ':' in name:
+                name, _, subst = name.partition(':')
+                m = re_variable_subst.match(subst)
+                assert m
+                subst = m.groups()
+
+            # Literal $
+            if name == '$':
+                value = '$'
+
+            # Special variables
+            elif name == '@':
+                value = Var('target')
+            elif name == '<':
+                value = UnpackList(Var('rule_deps'))
+
+            # Functions
+            elif name.startswith('sort '):
                 value = ' '.join(sorted(set(name[5:].split())))
             elif name.startswith('strip '):
                 value = name[6:].strip()
@@ -94,7 +191,25 @@ class ParseContext:
                 if name not in self.variables:
                     self.warning('variable %r does not exist' % name)
                 value = self.variables.get(name, '')
-            expr = expr[:i] + value + expr[j+1:]
+
+            # Wrap expression with a substitution when necessary
+            if subst:
+                (old, new) = subst
+                value = SuffixReplace(value, old, new)
+
+            result.append(value)
+
+        result.append(expr)
+        return Join(*result)
+
+    def eval(self, expr):
+        # XXX we're not actually evaluating now, just make sure we have a concrete value
+        assert isinstance(expr, str)
+        return expr
+
+    def parse_and_eval(self, expr):
+        expr = self.parse_expr(expr)
+        return self.eval(expr)
 
     def is_eq(self, expr):
         expr = expr.split(',')
@@ -113,6 +228,10 @@ class ParseContext:
         if self.enable_warnings:
             self.print_message('WARNING', message)
 
+    def get_norm_path(self, path):
+        assert isinstance(path, str)
+        return os.path.normpath('%s/%s' % (self.root_path, path))
+
     def parse_line(self, line):
         line_strip = line.strip()
         line_split = line.split()
@@ -121,7 +240,9 @@ class ParseContext:
         if self.current_rule:
             # If the line starts with a tab, this line is a command for the rule
             if line.startswith('\t'):
-                self.current_rule.cmds.append(self.eval(line[1:]))
+                # XXX parsing expressions and token splitting needs to be combined!
+                cmd = [self.parse_expr(arg) for arg in shlex.split(line[1:])]
+                self.current_rule.cmds.append(cmd)
                 return
             # Otherwise, we're done with the rule. Handle the rule and parse
             # this line normally.
@@ -133,7 +254,7 @@ class ParseContext:
         elif line.startswith('ifeq ('):
             assert line.endswith(')')
             if self.if_stack[-1]:
-                result = self.is_eq(self.eval(line[6:-1]))
+                result = self.is_eq(self.parse_and_eval(line[6:-1]))
             else:
                 result = False
             self.else_stack.append(result)
@@ -141,7 +262,7 @@ class ParseContext:
         elif line.startswith('ifneq ('):
             assert line.endswith(')')
             if self.if_stack[-1]:
-                result = not self.is_eq(self.eval(line[7:-1]))
+                result = not self.is_eq(self.parse_and_eval(line[7:-1]))
             else:
                 result = False
             self.else_stack.append(result)
@@ -159,7 +280,7 @@ class ParseContext:
         elif line.startswith('else ifeq ('):
             assert line.endswith(')')
             if self.if_stack[-2]:
-                result = self.is_eq(self.eval(line[11:-1]))
+                result = self.is_eq(self.parse_and_eval(line[11:-1]))
             else:
                 result = False
             self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1] and result
@@ -167,7 +288,7 @@ class ParseContext:
         elif line.startswith('else ifneq ('):
             assert line.endswith(')')
             if self.if_stack[-2]:
-                result = not self.is_eq(self.eval(line[12:-1]))
+                result = not self.is_eq(self.parse_and_eval(line[12:-1]))
             else:
                 result = False
             self.if_stack[-1] = self.if_stack[-2] and not self.else_stack[-1] and result
@@ -184,13 +305,16 @@ class ParseContext:
             self.if_stack.pop()
         elif line.startswith('include ') or line.startswith('-include '):
             if self.if_stack[-1]:
-                include_path = self.eval(line[8:].lstrip())
-                if os.path.exists(include_path):
-                    self.parse(include_path)
-                elif not line.startswith('-'):
-                    self.error('include file %r does not exist' % include_path)
-                else:
-                    self.warning('include file %r does not exist' % include_path)
+                # XXX parsing expressions and token splitting needs to be combined!
+                paths = shlex.split(self.parse_and_eval(line[8:].lstrip()))
+                for path in paths:
+                    include_path = self.get_norm_path(path)
+                    if os.path.exists(include_path):
+                        self.parse(include_path)
+                    elif not line.startswith('-'):
+                        self.error('include file %r does not exist' % include_path)
+                    else:
+                        self.warning('include file %r does not exist' % include_path)
         elif line.startswith('$(error '):
             assert line.endswith(')')
             line = line[8:-1]
@@ -205,25 +329,27 @@ class ParseContext:
             if m is not None:
                 (name, assign, value) = m.groups()
                 if self.if_stack[-1]:
+                    expr = self.parse_expr(value)
                     if assign == ':=':
-                        self.variables[name] = self.eval(value)
+                        self.variables[name] = self.eval(expr)
                     elif assign == '+=':
                         if name in self.variables:
-                            self.variables[name] += ' ' + self.eval(value)
+                            self.variables[name] += ' ' + self.eval(expr)
                         else:
-                            self.variables[name] = self.eval(value)
+                            self.variables[name] = self.eval(expr)
                     elif assign == '?=':
                         if self.variables.get(name, '') == '':
-                            self.variables[name] = value
+                            self.variables[name] = expr
                     else:
                         assert assign == '='
-                        self.variables[name] = value
+                        self.variables[name] = expr
             else:
                 m = re_rule.match(line)
                 if m is not None:
                     assert not self.current_rule
                     target, deps = m.groups()
-                    deps = self.eval(deps)
+                    target = self.parse_expr(target)
+                    deps = self.parse_expr(deps)
                     self.current_rule = Rule(target=target, deps=deps, cmds=[])
                 else:
                     self.error('could not parse %r' % line)
@@ -284,10 +410,9 @@ class ParseContext:
     def get_cleaned_rules(self):
         rules = []
         for rule in self.rules:
-            rule.target = os.path.normpath(rule.target)
+            rule.target = self.get_norm_path(rule.target)
             rule.deps = shlex.split(rule.deps)
-            rule.deps = [os.path.normpath(dep) for dep in rule.deps]
-            rule.cmds = [shlex.split(cmd) for cmd in rule.cmds]
+            rule.deps = [self.get_norm_path(dep) for dep in rule.deps]
             # Ignore - at the beginning of commands
             rule.cmds = [[cmd[0].lstrip('-')] + cmd[1:] for cmd in rule.cmds]
             # Ruthlessly remove @echo commands
@@ -297,16 +422,29 @@ class ParseContext:
             rules.append(rule)
         return rules
 
-# Simple object for storing rule stuff as attributes. We don't need any functionality really.
-class Rule:
-    def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
+def format_expr(expr):
+    if isinstance(expr, str):
+        assert '%' not in expr
+        return repr(expr)
+    assert isinstance(expr, tuple)
+    (fn, *args) = expr
+    if fn == 'join':
+        return "(%s)" % (' + '.join(format_expr(a) for a in args))
+    elif fn == 'var':
+        (var,) = args
+        return var
+    elif fn == 'unpack':
+        (value,) = args
+        return '*' + format_expr(value)
+    elif fn == 'suffix-replace':
+        (value, old, new) = (format_expr(a) for a in args)
+        return 'suffix_replace(%s, %s, %s)' % (value, old, new)
+    else:
+        assert 0
 
-def format_list(l, indent=0, use_repr=False):
-    if use_repr:
-        l = map(repr, l)
+def format_list(l, indent=0):
     indent = ' ' * indent
-    items = ['%s    %s,\n' % (indent, item) for item in l]
+    items = ['%s    %s,\n' % (indent, format_expr(item)) for item in l]
     return '[\n%s%s]' % (''.join(items), indent)
 
 def format_dict(d, indent=0, use_repr=False):
@@ -323,11 +461,17 @@ def rule_key(rule):
 def get_args_used_map(rules):
     # Collect, for each argument, a list all commands that use that
     # argument, so we can deduplicate
+    # XXX we should take order into account for correctness, since tools can change
+    # behavior based on the order of arguments (obviously). For now, we're going
+    # the imperfect way in the hope of getting maximum deduplication (and keeping this
+    # code simple).
     args_used = collections.defaultdict(list)
     for rule in rules:
         for idx, cmd in enumerate(rule.cmds):
             for arg in cmd[1:]:
-                if arg.startswith('-') and arg not in {'-o', '-O'}:
+                # Only allow concrete values as arguments--any unevaluated expression
+                # can have a different value per command and cannot be deduplicated here.
+                if isinstance(arg, str):
                     args_used[arg].append((rule.target, idx))
 
     # Create the inverse index: for each set of commands that use an
@@ -358,30 +502,32 @@ def process_rule_cmds(rules, var_set_idx):
             d_file_path = None
             var_sets_used = set()
             for arg in cmd:
-                if arg == '$@':
-                    nice_cmd.append('target')
-                elif arg == '$<':
-                    nice_cmd.append('*rule_deps')
-                elif arg.startswith('-MT') and arg[3:] == rule.target:
-                    add_d_file = True
-                elif arg.startswith('-MF'):
-                    d_file_path = arg[3:]
+                # Check for arguments with not-yet-evaluated expressions
+                if not isinstance(arg, str):
+                    assert isinstance(arg, tuple)
+                    nice_cmd.append(arg)
+                # XXX disabled for now
+                #elif arg.startswith('-MT') and arg[3:] == rule.target:
+                #    add_d_file = True
+                #elif arg.startswith('-MF'):
+                #    d_file_path = arg[3:]
                 elif arg in var_set_idx:
                     var_sets_used.add(var_set_idx[arg])
                 else:
-                    assert not arg.startswith('$'), arg
-                    nice_cmd.append(repr(arg))
+                    assert '$' not in arg, arg
+                    nice_cmd.append(arg)
 
             for v in var_sets_used:
-                nice_cmd.append('*_vars_%s' % v)
+                nice_cmd.append(UnpackList(Var('_vars_%s' % v)))
 
-            if add_d_file:
-                nice_cmd.append('"-MT%s" % target')
-                assert d_file_path
-                if d_file_path[:-1] == rule.target[:-1]:
-                    nice_cmd.append('"-MF%s.d" % target[:-2]')
-                else:
-                    nice_cmd.append('"-MF%s"' % shlex.quote(d_file_path))
+            # XXX disabled for now
+            #if add_d_file:
+            #    nice_cmd.append('"-MT%s" % target')
+            #    assert d_file_path
+            #    if d_file_path[:-1] == rule.target[:-1]:
+            #        nice_cmd.append('"-MF%s.d" % target[:-2]')
+            #    else:
+            #        nice_cmd.append('"-MF%s"' % shlex.quote(d_file_path))
 
             new_cmds.append(nice_cmd)
         rule.cmds = new_cmds
@@ -444,12 +590,13 @@ def process_rule_dirs(rules):
                 dep_dir, dep_name = os.path.split(dep)
                 assert dep_dir == src_dir
                 # Try to put the dep path in terms of the target
-                prefix = target_name[:-2]
-                if dep_name.startswith(prefix):
-                    suffix = dep_name.replace(prefix, '', 1)
-                    new_deps.append('"%%s/%%s" %% (src_dir, target_name[:-2] + %r)' % suffix)
-                else:
-                    new_deps.append('"%%s/%%s" %% (src_dir, %r)' % dep_name)
+                if '.' in target_name:
+                    prefix, _, suffix = target_name.rpartition('.')
+                    if dep_name.startswith(prefix):
+                        new_suffix = dep_name[len(prefix):]
+                        dep_name = SuffixReplace(dep_name, suffix, new_suffix)
+
+                new_deps.append(Join(Var('src_dir'), '/', dep_name))
 
         rule.target_dir = target_dir
         rule.target_name = target_name
@@ -504,6 +651,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     ctx = ParseContext(enable_warnings=args.warnings)
+    ctx.root_path = os.path.dirname(args.file)
     for d in args.defines:
         (k, v) = d.split('=', 1)
         ctx.variables[k] = v
@@ -533,10 +681,15 @@ if __name__ == '__main__':
 
     # Write out the processed rules into the output rules.py file
     with open(args.output, 'wt') as f:
+        f.write('def suffix_replace(s, old, new):\n')
+        f.write('    if s.endswith(old):\n')
+        f.write('        return s[:-len(old)] + new\n')
+        f.write('    return s\n\n')
+
         f.write('def rules(ctx):\n')
 
         for idx, (cmds, args) in enumerate(args_used_by.items()):
-            f.write('    _vars_%s = %s\n' % (idx, format_list(args, indent=4, use_repr=True)))
+            f.write('    _vars_%s = %s\n' % (idx, format_list(args, indent=4)))
 
         for rule in src_lists:
             f.write('    _src_list_%s = []\n' % rule.pred_list_idx)
