@@ -196,8 +196,8 @@ class Rule:
         return hashlib.sha1(pickle.dumps(info)).hexdigest()
 
 class BuildContext:
-    def __init__(self):
-        pass
+    def __init__(self, vars):
+        self.vars = vars
 
     def add_rule(self, targets, deps, cmds, d_file=None, order_only_deps=[], msvc_show_includes=False, stdout_filter=None, latency=1):
         cwd = self.cwd
@@ -375,6 +375,8 @@ def main():
     parser.add_option('-f', dest='files', action='append', help='specify the path to a rules.py file (default is "rules.py")', metavar='FILE')
     parser.add_option('-j', dest='jobs', type='int', default=None, help='specify the number of parallel jobs (defaults to one per CPU)')
     parser.add_option('-v', dest='verbose', action='store_true', help='print verbose build output')
+    parser.add_option('--var', dest='vars', type='str', action='append', default=[], metavar='KEY=VALUE',
+            help='option in the form key=value, sets a variable in the ctx.vars dictionary for passing to rules')
     parser.add_option('--no-parallel', dest='parallel', action='store_false', default=True, help='disable parallel build')
     (options, args) = parser.parse_args()
     if options.jobs is None:
@@ -383,6 +385,8 @@ def main():
         options.files = ['rules.py'] # default to "-f rules.py"
     cwd = os.getcwd()
     args = [normpath(joinpath(cwd, x)) for x in args]
+    # Parse variables passed with the --var option
+    variables = {k: v for var in options.vars for k, _, v in [var.partition('=')]}
 
     # Presumably -v should shut off the progress indicator; supporting it w/ --no-parallel seems like extra work for no gain.
     global progress_line, usable_columns
@@ -390,7 +394,7 @@ def main():
     progress_line = usable_columns is not None and not options.verbose and options.parallel
 
     # Set up rule DB, reading in make.db files as we go
-    ctx = BuildContext()
+    ctx = BuildContext(variables)
     for f in options.files:
         parse_rules_py(ctx, options, normpath(joinpath(cwd, f)), visited)
     for target in args:
