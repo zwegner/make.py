@@ -96,12 +96,17 @@ else:
     def joinpath(cwd, path):
         return path if path[0] == '/' else '%s/%s' % (cwd, path)
 
+def remove_path(path):
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+    elif os.path.exists(path):
+        os.unlink(path)
+
 def run_cmd(rule, options):
     # Always delete the targets first
     local_make_db = make_db[rule.cwd]
     for t in rule.targets:
-        if os.path.exists(t):
-            os.unlink(t)
+        remove_path(t)
         if t in local_make_db:
             del local_make_db[t]
 
@@ -166,8 +171,7 @@ def run_cmd(rule, options):
             any_errors = True
             stdout_write("%s%s\n\n" % (built_text, '\n'.join(all_out)))
             for t in rule.targets:
-                if os.path.exists(t):
-                    os.unlink(t)
+                remove_path(t)
             exit(1)
 
     for t in rule.targets:
@@ -415,7 +419,7 @@ def main():
             if target not in rules:
                 if os.path.exists(target):
                     print("Deleting stale target '%s'..." % target)
-                    os.unlink(target)
+                    remove_path(target)
                 del db[target]
 
     if options.parallel:
