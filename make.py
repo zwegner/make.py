@@ -230,6 +230,18 @@ class BuildContext:
                 exit(1)
             rules[t] = rule
 
+def parse_d_file(d_file):
+    with io_lock:
+        with open(d_file, 'rt') as f:
+            d_file_deps = f.read()
+    d_file_deps = d_file_deps.replace('\\\n', '')
+    if '\\' in d_file_deps: # shlex.split is slow, don't use it unless we really need it
+        d_file_deps = shlex.split(d_file_deps)
+    else:
+        d_file_deps = d_file_deps.split()
+    d_file_deps = [x for x in d_file_deps if not x.endswith(':')]
+    return d_file_deps
+
 def build(target, options):
     if target in visited or target in completed:
         return
@@ -246,14 +258,7 @@ def build(target, options):
     deps = [normpath(joinpath(rule.cwd, x)) for x in rule.deps]
     d_file_deps = []
     if rule.d_file and os.path.exists(rule.d_file):
-        with io_lock:
-            with open(rule.d_file, 'rt') as f:
-                d_file_deps = f.read()
-        d_file_deps = d_file_deps.replace('\\\n', '')
-        if '\\' in d_file_deps: # shlex.split is slow, don't use it unless we really need it
-            d_file_deps = shlex.split(d_file_deps)[1:]
-        else:
-            d_file_deps = d_file_deps.split()[1:]
+        d_file_deps = parse_d_file(rule.d_file)
         d_file_deps = [normpath(joinpath(rule.cwd, x)) for x in d_file_deps]
     for dep in itertools.chain(deps, d_file_deps, rule.order_only_deps):
         build(dep, options)
