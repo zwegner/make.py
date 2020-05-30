@@ -406,7 +406,7 @@ def rule_to_makefile(fp, rule):
     target_dirs.discard('')
     if target_dirs:
         # Create target directories
-        cmd_list.insert(0, ['mkdir', '-p'] + [pipes.quote(path) for path in target_dirs])
+        cmd_list.insert(0, ['mkdir', '-p'] + list(target_dirs))
     cmds = '\n\t'.join([' '.join([pipes.quote(arg) for arg in cmd]) for cmd in cmd_list])
     # recipe
     fp.write('%s: %s\n\t%s\n\n' % (targets, deps, cmds))
