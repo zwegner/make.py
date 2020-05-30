@@ -387,12 +387,19 @@ def path_strip(prefix, path):
         path = path[len(prefix):]
     return path
 
+# Escape a path for use inside a Makefile. No idea if this is good enough...
+def makefile_esc(path):
+    if ':' in path:
+        print('ERROR: Make cannot handle paths with colons: %r' % path)
+        exit(1)
+    return path.replace('\\', '\\\\').replace(' ', '\\ ')
+
 def rule_to_makefile(fp, rule):
     # targets
     target_list = [path_strip(rule.cwd, p) for p in rule.targets]
-    targets = ' '.join(target_list)
+    targets = ' '.join(map(makefile_esc, target_list))
     # deps
-    deps = ' '.join([path_strip(rule.cwd, p) for p in rule.deps])
+    deps = ' '.join([makefile_esc(path_strip(rule.cwd, p)) for p in rule.deps])
     # cmds
     cmd_list = rule.cmds[:]
     target_dirs = {os.path.dirname(t) for t in target_list}
