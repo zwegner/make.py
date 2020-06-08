@@ -96,17 +96,30 @@ else:
     def joinpath(cwd, path):
         return path if path[0] == '/' else '%s/%s' % (cwd, path)
 
-def remove_path(path):
-    if os.path.isdir(path):
-        shutil.rmtree(path)
-    elif os.path.exists(path):
+# Remove a target path. We try removing it as a regular file, so the normal case
+# is only one syscall, otherwise, if it's a directory, recursively remove it
+def remove_path(cwd, path):
+    try:
         os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except (PermissionError, IsADirectoryError):
+        if os.path.isdir(path):
+            # Check that the path is within the relevant _out directory
+            out_dir = '%s/_out/' % os.path.realpath(cwd)
+            if os.path.realpath(path).startswith(out_dir):
+                shutil.rmtree(path)
+            else:
+                stdout_write("WARNING: not removing target directory '%s' that "
+                        "is not in output directory '%s'\n" % (path, out_dir))
+            return
+        raise
 
 def run_cmd(rule, options):
     # Always delete the targets first
     local_make_db = make_db[rule.cwd]
     for t in rule.targets:
-        remove_path(t)
+        remove_path(rule.cwd, t)
         if t in local_make_db:
             del local_make_db[t]
 
@@ -171,7 +184,7 @@ def run_cmd(rule, options):
             any_errors = True
             stdout_write("%s%s\n\n" % (built_text, '\n'.join(all_out)))
             for t in rule.targets:
-                remove_path(t)
+                remove_path(rule.cwd, t)
             exit(1)
 
     for t in rule.targets:
@@ -470,7 +483,7 @@ def main():
             if target not in rules:
                 if os.path.exists(target):
                     print("Deleting stale target '%s'..." % target)
-                    remove_path(target)
+                    remove_path(cwd, target)
                 del db[target]
 
     if options.parallel:
