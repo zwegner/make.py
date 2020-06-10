@@ -490,27 +490,29 @@ class ParseContext:
 
 def format_expr(expr):
     if isinstance(expr, str):
-        assert '%' not in expr
         return repr(expr)
     assert isinstance(expr, tuple)
-    (fn, *args) = expr
+    [fn, *args] = expr
     if fn == 'join':
-        return "(%s)" % (' + '.join(format_expr(a) for a in args))
+        return "''.join(%s)" % ', '.join(format_expr(a) for a in args)
     elif fn == 'metavar':
         [var] = args
         return var
     elif fn == 'unpack':
-        (value,) = args
+        [value] = args
         return '*' + format_expr(value)
     elif fn == 'pat-subst':
         [value, old, new] = (format_expr(a) for a in args)
         return 'pat_subst(%s, %s, %s)' % (value, old, new)
     else:
-        assert 0
+        assert 0, fn
 
-def format_list(l, indent=0):
+def format_list(items, indent=0):
+    items = [format_expr(item) for item in items]
+    if sum(len(item)+2 for item in items) + indent < 100:
+        return '[%s]' % ', '.join(items)
     indent = ' ' * indent
-    items = ['%s    %s,\n' % (indent, format_expr(item)) for item in l]
+    items = ['%s    %s,\n' % (indent, item) for item in items]
     return '[\n%s%s]' % (''.join(items), indent)
 
 def format_dict(d, indent=0, use_repr=False):
