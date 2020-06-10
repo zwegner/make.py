@@ -204,9 +204,7 @@ class ParseContext:
                 else:
                     value = ''
             else:
-                if name not in self.variables:
-                    self.warning('variable %r does not exist' % name)
-                value = self.variables.get(name, '')
+                value = Var(name)
 
             # Wrap expression with a substitution when necessary
             if subst:
@@ -219,9 +217,24 @@ class ParseContext:
         return Join(*result)
 
     def eval(self, expr):
-        # XXX we're not actually evaluating now, just make sure we have a concrete value
-        assert isinstance(expr, str)
-        return expr
+        if isinstance(expr, str):
+            return expr
+        assert isinstance(expr, tuple)
+        [fn, *args] = expr
+        if fn == 'join':
+            value = ''.join(self.eval(arg) for arg in args)
+        elif fn == 'var':
+            [name] = args
+            if name not in self.variables:
+                self.warning('variable %r does not exist' % name)
+            value = self.variables.get(name, '')
+        elif fn == 'pat-subst':
+            [value, old, new] = args
+            return pat_subst(self.eval(value), old, new)
+        else:
+            assert 0, fn
+        # Recursively evaluate while not fully expanded
+        return self.eval(value)
 
     def parse_and_eval(self, expr):
         expr = self.parse_expr(expr)
@@ -368,8 +381,10 @@ class ParseContext:
                 if m is not None:
                     assert not self.current_rule
                     target, deps = m.groups()
-                    target = self.parse_expr(target)
-                    deps = self.parse_expr(deps)
+                    target = self.parse_and_eval(target)
+                    # XXX parsing expressions and token splitting needs to be combined!
+                    deps = shlex.split(deps)
+                    deps = [self.parse_and_eval(dep) for dep in deps]
                     self.current_rule = Rule(target=target, deps=deps, cmds=[])
                 else:
                     self.error('could not parse %r' % line)
