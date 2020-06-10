@@ -1,6 +1,6 @@
-import contextlib
 import io
 import subprocess
+import sys
 import tempfile
 import traceback
 
@@ -8,20 +8,30 @@ import gnu_make_parse
 
 PASSES = FAILS = 0
 
-@contextlib.contextmanager
-def wrap_test():
+def test(*args, **kwargs):
     global PASSES, FAILS
-
     try:
-        yield
+        inner_test(*args, **kwargs)
         PASSES += 1
     except Exception:
-        traceback.print_exc()
+        # Wow, what a bunch of horseshit. I want to print the traceback of the caught
+        # exception, with all frames up to the root of the stack. The traceback.print_exc()
+        # function stops at the caller's frame (i.e. here), which is basically completely
+        # useless for us. Apparently this is not very important functionality, as there
+        # is a Python bug open since 2006: https://bugs.python.org/issue1553375
+        # So anyways, here's a hacky shitty way to get what we want. Maybe there's a better
+        # way, but this works, so oh well.
+        [etype, value, tb] = sys.exc_info()
+        frames = [*reversed(list(traceback.walk_stack(None))),
+                *traceback.walk_tb(tb)]
+        tb = traceback.StackSummary.extract(frames)
+        print('Traceback (most recent call last):')
+        print(''.join(tb.format()), end='')
+        print('%s: %s' % (etype.__name__, value))
+        print()
         FAILS += 1
-        return
 
-@wrap_test()
-def test(text, vars=None):
+def inner_test(text, vars={}, rules=[]):
     exp_stderr = None
 
     # Run the input through gnu_make_parse
