@@ -33,7 +33,7 @@ import sys
 from gnu_make_lib import *
 
 # This is fairly restrictive, just to be safe for now
-re_rule = re.compile(r'^((?:[-\w./%]|\\ )+):(.*)$')
+re_rule = re.compile(r'^((?:[-\w./%$()]|\\ )+):(.*)$')
 
 re_variable_assign = re.compile(r'(\S+)\s*(=|:=|\+=|\?=)\s*(.*)')
 
