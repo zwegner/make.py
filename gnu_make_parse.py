@@ -400,7 +400,15 @@ class ParseContext:
                     # XXX parsing expressions and token splitting needs to be combined!
                     deps = shlex.split(deps)
                     deps = [self.parse_and_eval(dep) for dep in deps]
-                    self.current_rule = Rule(target=target, deps=deps, cmds=[])
+                    # Check for order-only deps
+                    if '|' in deps:
+                        idx = deps.index('|')
+                        [deps, oo_deps] = deps[:idx], deps[idx+1:]
+                        if '|' in oo_deps:
+                            self.error('multiple | separators in line')
+                    else:
+                        oo_deps = []
+                    self.current_rule = Rule(target=target, deps=deps, oo_deps=oo_deps, cmds=[])
                 else:
                     self.error('could not parse %r' % line)
 
@@ -690,11 +698,16 @@ def write_rule(f, rule, indent):
     f.write(ind + 'rule_deps = %s\n' % format_list(rule.deps, indent=indent))
     if rule.pred_list_idx is not None:
         f.write(ind + 'rule_deps += _src_list_%s\n' % rule.pred_list_idx)
+    if rule.oo_deps:
+        f.write(ind + 'rule_oo_deps = %s\n' % format_list(rule.oo_deps, indent=indent))
+        rule_oo_dep_str = ', order_only_deps=rule_oo_deps'
+    else:
+        rule_oo_dep_str = ''
     f.write(ind + 'rule_cmds = [\n')
     for cmd in rule.cmds:
         f.write(ind + '    %s,\n' % format_list(cmd, indent=indent+4))
     f.write(ind + ']\n')
-    f.write(ind + 'ctx.add_rule(target, rule_deps, rule_cmds)\n')
+    f.write(ind + 'ctx.add_rule(target, rule_deps, rule_cmds%s)\n' % rule_oo_dep_str)
     if rule.succ_list_idx is not None:
         f.write(ind + '_src_list_%s.append(target)\n' % rule.succ_list_idx)
 
