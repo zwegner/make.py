@@ -409,7 +409,7 @@ class ParseContext:
                     else:
                         oo_deps = []
                     self.current_rule = Rule(target=target, deps=deps, oo_deps=oo_deps, cmds=[])
-                else:
+                elif line:
                     self.error('could not parse %r' % line)
 
     def flush_rule(self):
@@ -448,8 +448,6 @@ class ParseContext:
             i = line.find('#')
             if i >= 0:
                 line = line[:i]
-            if not line:
-                continue
 
             # Are we inside a macro definition?
             if self.cur_macro is not None:
@@ -461,6 +459,9 @@ class ParseContext:
                 else:
                     self.cur_macro_lines.append(self.parse_expr(line))
                     self.cur_macro_lines.append('\n')
+                continue
+
+            if not line:
                 continue
 
             self.parse_line(line)
