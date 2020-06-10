@@ -707,12 +707,12 @@ if __name__ == '__main__':
 
             # Find all rules that are used more than once, and write out some for loops to
             # process all the targets that use the same rule
-            for key, target_map in rule_srcs.items():
+            for [i, [key, target_map]] in enumerate(rule_srcs.items()):
                 rule = rule_map[key]
                 skip_rules.add(key)
                 f.write('\n')
-                f.write('    target_map = %s\n' % format_dict(target_map, indent=4, use_repr=True))
-                f.write('    for target_dir, targets in target_map.items():\n')
+                f.write('    target_map_%s = %s\n' % (i, format_dict(target_map, indent=4, use_repr=True)))
+                f.write('    for [target_dir, targets] in target_map_%s.items():\n' % i)
                 f.write('        src_dir = dir_mapping[target_dir]\n')
                 f.write('        for target_name in targets:\n')
                 f.write('            target = "%s/%s" % (target_dir, target_name)\n')
