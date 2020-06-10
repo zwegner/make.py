@@ -196,6 +196,20 @@ class ParseContext:
                     value = value[index+1:]
             elif name.startswith('wildcard '):
                 value = ' '.join(glob.glob(name[9:]))
+            elif name.startswith('call '):
+                args = name[5:].split(',')
+                fn = args[0]
+                if fn not in self.variables:
+                    self.error('function %r does not exist' % fn)
+                # Create a new variable context with $(1) etc filled in with args
+                old_vars = self.variables
+                self.variables = self.variables.copy()
+                for [i, arg] in enumerate(args):
+                    self.variables[str(i)] = arg
+                # Evaluate
+                value = self.eval(self.variables.get(fn, ''))
+                self.variables = old_vars
+
             elif name.startswith('or '):
                 for arg in name[3:].split(','):
                     if arg:
