@@ -102,6 +102,7 @@ class ParseContext:
         self.enable_warnings = enable_warnings
         self.info_stack = []
         self.variables = {'MAKE': 'make'}
+        self.recursive_vars = {}
         self.current_rule = None
         self.rules = []
         self.if_stack = [True]
@@ -380,17 +381,26 @@ class ParseContext:
                     expr = self.parse_expr(value)
                     if assign == ':=':
                         self.variables[name] = self.eval(expr)
+                        self.recursive_vars[name] = False
                     elif assign == '+=':
-                        if name in self.variables:
-                            self.variables[name] += ' ' + self.eval(expr)
+                        # Match the += behavior: based on the previous definition of
+                        # the variable we're appending to, += is either recursive or not.
+                        # In case you haven't noticed, make is awful
+                        if self.recursive_vars.get(name, False):
+                            assert name in self.variables
+                            self.variables[name] = Join(self.variables[name], ' ', expr)
                         else:
-                            self.variables[name] = self.eval(expr)
+                            if name in self.variables:
+                                self.variables[name] += ' ' + self.eval(expr)
+                            else:
+                                self.variables[name] = self.eval(expr)
                     elif assign == '?=':
                         if self.variables.get(name, '') == '':
                             self.variables[name] = expr
                     else:
                         assert assign == '='
                         self.variables[name] = expr
+                        self.recursive_vars[name] = True
             else:
                 m = re_rule.match(line)
                 if m is not None:

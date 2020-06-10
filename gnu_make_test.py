@@ -26,7 +26,7 @@ def test(text, vars=None):
 
     # Run the input through gnu_make_parse
     f = io.StringIO(text)
-    ctx = gnu_make_parse.ParseContext()
+    ctx = gnu_make_parse.ParseContext(enable_warnings=False)
     ctx.parse_file(f, 'test-file')
 
     for [k, v] in sorted(vars.items()):
@@ -104,6 +104,32 @@ d := $(x:a%.o=a%.c)''', vars={
         'c': 'a.c ab.z ba.o bb.o',
         'd': 'aa.c ab.z ba.o bb.o',
     })
+
+    # Appending, for recursive, simple, and undefined vars
+    test('''
+rec = $(base)
+simple := $(base)
+base = abc
+rec += xyz
+simple += xyz
+und += xyz
+# Redef
+''', vars={'rec': 'abc xyz', 'simple': ' xyz', 'und': 'xyz'})
+
+    # Same, but redefine variables in the middle to be the opposite type
+    test('''
+rec = $(base)
+simple := $(base)
+base = abc
+rec += xyz
+simple += xyz
+rec := $(base2)
+simple = $(base2)
+base2 = abc
+rec += xyz
+simple += xyz
+''', vars={'rec': ' xyz', 'simple': 'abc xyz'})
+
 
     # Function calls
     test('''
