@@ -101,13 +101,13 @@ class ParseContext:
     def __init__(self, enable_warnings=True):
         self.enable_warnings = enable_warnings
         self.info_stack = []
-        self.macros = {}
         self.variables = {'MAKE': 'make'}
         self.current_rule = None
         self.rules = []
         self.if_stack = [True]
         self.else_stack = []
         self.cur_macro = None
+        self.cur_macro_lines = None
 
     def parse_expr(self, expr):
         result = []
@@ -267,7 +267,7 @@ class ParseContext:
 
         if line.startswith('define '):
             self.cur_macro = line[7:]
-            self.macros[self.cur_macro] = []
+            self.cur_macro_lines = []
         elif line.startswith('ifeq ('):
             assert line.endswith(')')
             if self.if_stack[-1]:
@@ -339,7 +339,8 @@ class ParseContext:
                 self.error(line)
         elif line.startswith('$(eval $('):
             assert line.endswith('))')
-            for line in self.macros[line[9:-2]]:
+            value = self.parse_and_eval(line[7:-1])
+            for line in value.splitlines():
                 self.parse_line(line)
         # No recognized construct: check for rule commands, variable assignment, and rule definitions
         else:
@@ -431,9 +432,13 @@ class ParseContext:
             # Are we inside a macro definition?
             if self.cur_macro is not None:
                 if line.strip() == 'endef':
+                    assert self.cur_macro_lines[-1] == '\n'
+                    self.variables[self.cur_macro] = Join(*self.cur_macro_lines[:-1])
                     self.cur_macro = None
+                    self.cur_macro_lines = None
                 else:
-                    self.macros[self.cur_macro].append(line)
+                    self.cur_macro_lines.append(self.parse_expr(line))
+                    self.cur_macro_lines.append('\n')
                 continue
 
             self.parse_line(line)
