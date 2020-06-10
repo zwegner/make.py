@@ -432,9 +432,8 @@ class ParseContext:
             # Set line number for error messages
             info[1] = line_nb + 1
 
-            # Remove whitespace from the right side (not the left since
-            # we need to preserve tabs)
-            line = line.rstrip()
+            # Remove newline from the end
+            line = line.rstrip('\n')
 
             # Handle continuations first, before anything else
             if line_prefix:
