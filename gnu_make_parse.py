@@ -361,46 +361,50 @@ class ParseContext:
         self.current_rule = None
 
     def parse(self, path):
+        with open(path) as f:
+            self.parse_file(f, path)
+
+    def parse_file(self, f, path):
         initial_if_stack_depth = len(self.if_stack)
         info = [path, 0]
         self.info_stack.append(info)
-        with open(path) as f:
+
+        line_prefix = ''
+        for line_nb, line in enumerate(f):
+            # Set line number for error messages
+            info[1] = line_nb + 1
+
+            # Remove whitespace from the right side (not the left since
+            # we need to preserve tabs)
+            line = line.rstrip()
+
+            # Handle continuations first, before anything else
+            if line_prefix:
+                line = line_prefix + line.lstrip()
+            if line.endswith('\\'):
+                line_prefix = line[:-1] + ' '
+                continue
             line_prefix = ''
-            for line_nb, line in enumerate(f):
-                # Set line number for error messages
-                info[1] = line_nb + 1
 
-                # Remove whitespace from the right side (not the left since
-                # we need to preserve tabs)
-                line = line.rstrip()
+            # Remove comments and ignore blank lines
+            i = line.find('#')
+            if i >= 0:
+                line = line[:i]
+            if not line:
+                continue
 
-                # Handle continuations first, before anything else
-                if line_prefix:
-                    line = line_prefix + line.lstrip()
-                if line.endswith('\\'):
-                    line_prefix = line[:-1] + ' '
-                    continue
-                line_prefix = ''
+            # Are we inside a macro definition?
+            if self.cur_macro is not None:
+                if line.strip() == 'endef':
+                    self.cur_macro = None
+                else:
+                    self.macros[self.cur_macro].append(line)
+                continue
 
-                # Remove comments and ignore blank lines
-                i = line.find('#')
-                if i >= 0:
-                    line = line[:i]
-                if not line:
-                    continue
+            self.parse_line(line)
 
-                # Are we inside a macro definition?
-                if self.cur_macro is not None:
-                    if line.strip() == 'endef':
-                        self.cur_macro = None
-                    else:
-                        self.macros[self.cur_macro].append(line)
-                    continue
-
-                self.parse_line(line)
-
-            # Clean up if we're inside a rule definition at the end
-            self.flush_rule()
+        # Clean up if we're inside a rule definition at the end
+        self.flush_rule()
 
         assert not line_prefix
         assert initial_if_stack_depth == len(self.if_stack)
