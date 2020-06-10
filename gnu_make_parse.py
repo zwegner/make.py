@@ -64,8 +64,12 @@ def Join(*args):
                 r[-1] = r[-1] + arg
             else:
                 r.append(arg)
+        elif isinstance(arg, tuple) and arg[0] == 'join':
+            r.extend(arg[1:])
         else:
             r.append(arg)
+    if not r:
+        return ''
     if len(r) == 1:
         return r[0]
     return ('join', *r)
