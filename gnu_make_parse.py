@@ -240,18 +240,6 @@ class ParseContext:
         line_strip = line.strip()
         line_split = line.split()
 
-        # First, check if we're inside a rule
-        if self.current_rule:
-            # If the line starts with a tab, this line is a command for the rule
-            if line.startswith('\t'):
-                # XXX parsing expressions and token splitting needs to be combined!
-                cmd = [self.parse_expr(arg) for arg in shlex.split(line[1:])]
-                self.current_rule.cmds.append(cmd)
-                return
-            # Otherwise, we're done with the rule. Handle the rule and parse
-            # this line normally.
-            self.flush_rule()
-
         if line.startswith('define '):
             self.cur_macro = line[7:]
             self.macros[self.cur_macro] = []
@@ -328,7 +316,23 @@ class ParseContext:
             assert line.endswith('))')
             for line in self.macros[line[9:-2]]:
                 self.parse_line(line)
+        # No recognized construct: check for rule commands, variable assignment, and rule definitions
         else:
+            # If the line starts with a tab, this line is a command for the rule
+            if line.startswith('\t'):
+                if not self.current_rule:
+                    self.error('command not inside a rule')
+                if self.if_stack[-1]:
+                    # XXX parsing expressions and token splitting needs to be combined!
+                    line = line[1:]
+                    cmd = shlex.split(self.parse_and_eval(line))
+                    self.current_rule.cmds.append(cmd)
+                return
+            # Otherwise, if we were inside a rule, we're done. Flush the rule and parse
+            # this line normally.
+            elif self.current_rule:
+                self.flush_rule()
+
             m = re_variable_assign.match(line)
             if m is not None:
                 (name, assign, value) = m.groups()
