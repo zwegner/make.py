@@ -44,6 +44,9 @@ re_variable_subst = re.compile(r'([.%\w]*)=([.%\w]*)')
 # that can be evaluated either later during parsing or at runtime (i.e. translated
 # into Python code and inserted into the rules.py file we output).
 
+def MetaVar(value):
+    return ('metavar', value)
+
 def Var(value):
     return ('var', value)
 
@@ -158,9 +161,9 @@ class ParseContext:
 
             # Special variables
             elif name == '@':
-                value = Var('target')
+                value = MetaVar('target')
             elif name == '<':
-                value = UnpackList(Var('rule_deps'))
+                value = UnpackList(MetaVar('rule_deps'))
 
             # Functions
             elif name.startswith('sort '):
@@ -451,8 +454,8 @@ def format_expr(expr):
     (fn, *args) = expr
     if fn == 'join':
         return "(%s)" % (' + '.join(format_expr(a) for a in args))
-    elif fn == 'var':
-        (var,) = args
+    elif fn == 'metavar':
+        [var] = args
         return var
     elif fn == 'unpack':
         (value,) = args
@@ -539,7 +542,7 @@ def process_rule_cmds(rules, var_set_idx):
                     nice_cmd.append(arg)
 
             for v in var_sets_used:
-                nice_cmd.append(UnpackList(Var('_vars_%s' % v)))
+                nice_cmd.append(UnpackList(MetaVar('_vars_%s' % v)))
 
             # XXX disabled for now
             #if add_d_file:
@@ -617,7 +620,7 @@ def process_rule_dirs(rules):
                         new_suffix = dep_name[len(prefix):]
                         dep_name = PatSubst(MetaVar('target'), '%' + suffix, '%' + new_suffix)
 
-                new_deps.append(Join(Var('src_dir'), '/', dep_name))
+                new_deps.append(Join(MetaVar('src_dir'), '/', dep_name))
 
         rule.target_dir = target_dir
         rule.target_name = target_name
