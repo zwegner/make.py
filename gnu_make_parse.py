@@ -28,13 +28,16 @@ import glob
 import os
 import re
 import shlex
+import sys
+
+from gnu_make_lib import *
 
 # This is fairly restrictive, just to be safe for now
 re_rule = re.compile(r'^((?:[-\w./%]|\\ )+):(.*)$')
 
 re_variable_assign = re.compile(r'(\S+)\s*(=|:=|\+=|\?=)\s*(.*)')
 
-re_variable_subst = re.compile(r'%([.\w]*)=%([.\w]*)')
+re_variable_subst = re.compile(r'([.%\w]*)=([.%\w]*)')
 
 # A few "classes" for storing unevaluated variables and the like, that are returned
 # from parse_expr(). This gives us a unified representation of strings/variables
@@ -50,8 +53,8 @@ def UnpackList(value):
 def Glob():
     return ('Glob',)
 
-def SuffixReplace(value, old, new):
-    return ('suffix-replace', value, old, new)
+def PatSubst(value, old, new):
+    return ('pat-subst', value, old, new)
 
 def Join(*args):
     # Collapse consecutive strings
@@ -141,7 +144,13 @@ class ParseContext:
                 name, _, subst = name.partition(':')
                 m = re_variable_subst.match(subst)
                 assert m
-                subst = m.groups()
+                [old, new] = m.groups()
+                if '%' in old:
+                    assert old.count('%') == 1
+                else:
+                    old = '%' + old
+                    new = '%' + new
+                subst = (old, new)
 
             # Literal $
             if name == '$':
@@ -199,7 +208,7 @@ class ParseContext:
             # Wrap expression with a substitution when necessary
             if subst:
                 (old, new) = subst
-                value = SuffixReplace(value, old, new)
+                value = PatSubst(value, old, new)
 
             result.append(value)
 
@@ -448,9 +457,9 @@ def format_expr(expr):
     elif fn == 'unpack':
         (value,) = args
         return '*' + format_expr(value)
-    elif fn == 'suffix-replace':
-        (value, old, new) = (format_expr(a) for a in args)
-        return 'suffix_replace(%s, %s, %s)' % (value, old, new)
+    elif fn == 'pat-subst':
+        [value, old, new] = (format_expr(a) for a in args)
+        return 'pat_subst(%s, %s, %s)' % (value, old, new)
     else:
         assert 0
 
@@ -606,7 +615,7 @@ def process_rule_dirs(rules):
                     prefix, _, suffix = target_name.rpartition('.')
                     if dep_name.startswith(prefix):
                         new_suffix = dep_name[len(prefix):]
-                        dep_name = SuffixReplace(dep_name, suffix, new_suffix)
+                        dep_name = PatSubst(MetaVar('target'), '%' + suffix, '%' + new_suffix)
 
                 new_deps.append(Join(Var('src_dir'), '/', dep_name))
 
@@ -691,12 +700,16 @@ if __name__ == '__main__':
     # command/dependency structure, but differ only in source directory and target name
     rule_map, rule_srcs = deduplicate_rules(rules, dir_mapping, dir_blacklist)
 
+    # Read gnu_make_lib.py, the library of functions potentially used at both compile time
+    # and run time
+    base_dir = os.path.dirname(sys.argv[0])
+    with open('%s/gnu_make_lib.py' % base_dir) as f:
+        lib = f.read()
+
     # Write out the processed rules into the output rules.py file
     with open(args.output, 'wt') as f:
-        f.write('def suffix_replace(s, old, new):\n')
-        f.write('    if s.endswith(old):\n')
-        f.write('        return s[:-len(old)] + new\n')
-        f.write('    return s\n\n')
+        f.write(lib)
+        f.write('\n')
 
         f.write('def rules(ctx):\n')
 
