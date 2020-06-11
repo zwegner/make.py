@@ -76,6 +76,10 @@ def inner_test(text, vars={}, rules=[]):
         assert proc.stdout == exp_stdout, (proc.stdout, exp_stdout)
         assert proc.stderr == exp_stderr, (proc.stderr, exp_stderr)
 
+# Test a single expression. Add the $(space) variable for convenience
+def test_expr(expr, expected):
+    test('space:=$(nothing) \nz := %s' % expr, vars={'space': ' ', 'z': expected})
+
 def main():
     # Last newline gets trimmed from defines
     test('''define nl
@@ -86,6 +90,20 @@ endef''', vars={'nl': '\n'})
     # Space trimming
     test('''nothing :=
 space := $(nothing) ''', vars={'space': ' '})
+
+    # Spaces in variables
+    foo = 'a    b        c    d  '
+    test('foo := %s' % foo, vars={'foo': foo})
+
+    # Space/comma handling
+    test('''
+nothing :=
+space := $(nothing) # space at eol
+comma := ,
+x := a b c
+y := $(subst $(space),$(comma),$(x))
+z := $(subst $(space),$(comma),$(x)  ,,a)# extra args
+''', vars={'x': 'a b c', 'y': 'a,b,c', 'z': 'a,b,c,,,,a', 'space': ' '})
 
     # Recursive variable expansion
     test('''
@@ -140,11 +158,46 @@ rec += xyz
 simple += xyz
 ''', vars={'rec': ' xyz', 'simple': 'abc xyz'})
 
-
     # Function calls
     test('''
 reverse = $(2) $(1)
 var = $(call reverse,x,y)''', vars={'var': 'y x'})
+
+    # Standard functions
+    test_expr('$(sort   a   b c f e d c)', 'a b c d e f')
+    test_expr('$(sort   a,b   a b a a,b b,a)', 'a a,b b b,a')
+    test_expr('$(sort   a$(space)b  , b$(space)a ,  a$(space)b)', ', a b')
+
+    test_expr('$(strip       x,       )', 'x,')
+    test_expr('$(strip       x,    y   )', 'x, y')
+    test_expr('$(strip       x    y   )', 'x y')
+
+    test_expr('$(findstring   a  ,a)', '')
+    test_expr('$(findstring   a  ,a  )', 'a  ')
+    test_expr('$(findstring   a  ,  a  )', 'a  ')
+    test_expr('$(findstring   a  ,  a  )', 'a  ')
+
+    test_expr('$(filter   a  b  ,   a b c   d , a)', 'a b a')
+    test_expr('$(filter-out   a  b  , a b c   d , a)', 'c d ,')
+    # % is any string. Also make sure other characters are treated literally
+    test_expr('$(filter a% b%, a b c aa d ba)', 'a b aa ba')
+    test_expr('$(filter-out a% b%, a b c aa d ba)', 'c d')
+    test_expr('$(filter a* b?, a* b? a b c aa d ba)', 'a* b?')
+    test_expr('$(filter-out a* b?, a* b? a b c aa d ba)', 'a b c aa d ba')
+    test_expr('$(filter a%b%c, a%b%c ab%c aabcc abc aabbcc axc)', 'a%b%c ab%c')
+
+    test_expr('$(addprefix   a,    x  y   z)', 'ax ay az')
+    test_expr('$(addprefix   a,    x,y,  y,   z)', 'ax,y, ay, az')
+    test_expr('$(addsuffix   a,    x  y   z)', 'xa ya za')
+    test_expr('$(addsuffix   a,    x,y,  y,   z)', 'x,y,a y,a za')
+
+    test_expr('$(subst     {,x,a { {,{)', 'a x x,x')
+    test_expr('$(subst     {, x, a { {,{)', ' a  x  x, x')
+
+    test_expr('$(notdir   a  a/b   a/b/c  x,y/z/a,b,c)', 'a b c a,b,c')
+
+    # Wildcard test--this depends on the contents of test_files
+    test_expr('$(wildcard test_f*/*.c)', 'test_files/a.c test_files/b.c test_files/c.c')
 
     print('%s/%s tests passed.' % (PASSES, PASSES + FAILS))
 

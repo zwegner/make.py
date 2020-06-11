@@ -35,7 +35,7 @@ from gnu_make_lib import *
 # This is fairly restrictive, just to be safe for now
 re_rule = re.compile(r'^((?:[-\w./%$()]|\\ )+):(.*)$')
 
-re_variable_assign = re.compile(r'(\S+)\s*(=|:=|\+=|\?=)\s*(.*)')
+re_variable_assign = re.compile(r'(\w+)\s*(=|:=|\+=|\?=)\s*(.*)')
 
 re_variable_subst = re.compile(r'([.%\w]*)=([.%\w]*)')
 
@@ -86,16 +86,43 @@ class Rule:
         self.__dict__.update(kwargs)
 
 # Kinda dumb tokenization function--like str.find() but finds the first of multiple tokens
-def find_first(s, tokens):
+def find_first(s, tokens, start=0):
     first_token = first_idx = None
     for token in tokens:
-        idx = s.find(token)
+        idx = s.find(token, start)
         if idx == -1:
             continue
         if first_idx is None or idx < first_idx:
             first_idx = idx
             first_token = token
     return (first_token, first_idx)
+
+# Whether a string matches some patterns, for the $(filter) and $(filter-out) functions
+def match_filter(s, patterns):
+    for pat in patterns:
+        # Deal with %, which is the only special character, and only permitted once
+        if '%' in pat:
+            [pre, _, suf] = pat.partition('%')
+            if s.startswith(pre) and s.endswith(suf):
+                return True
+        elif s == pat:
+            return True
+    return False
+
+# Argument length limits per-function. This is a weird hack but it's apparently
+# what's needed to match make.
+fn_arg_limit = {
+    'sort': 1,
+    'strip': 1,
+    'findstring': 2,
+    'filter': 2,
+    'filter-out': 2,
+    'addprefix': 2,
+    'addsuffix': 2,
+    'subst': 3,
+    'notdir': 1,
+    'wildcard': 1,
+}
 
 class ParseContext:
     def __init__(self, enable_warnings=True):
@@ -110,125 +137,178 @@ class ParseContext:
         self.cur_macro = None
         self.cur_macro_lines = None
 
+    def parse_atom(self, expr, start=0):
+        # Find the first special character
+        (token, i) = find_first(expr, ('$',), start=start)
+        if i is None:
+            return [None, expr[start:]]
+
+        assert token == '$'
+
+        expr_prefix = ''
+
+        # Get the name of the variable/expression being evaluated (single letter or parenthesized)
+        # Also, reset expr to be the remainder of the line for the next loop iteration.
+        if expr[i+1] in {'(', '{'}:
+            fn_args = ['']
+            expr_prefix = expr[start:i]
+            start = i + 2
+
+            expr_closer = ')' if expr[i+1] == '(' else '}'
+
+            # For the first match, include whitespace.
+            tokens = ('$', expr_closer, ',', ' ', '\t')
+            # To match make's weird parsing rules, allow a limit to the number of
+            # commas that are matched
+            arg_limit = 0
+            while True:
+                (token, j) = find_first(expr, tokens, start=start)
+                if j is None:
+                    self.error('parse error: unclosed expression')
+
+                fn_args[-1] = Join(fn_args[-1], expr[start:j])
+                start = j + 1
+
+                # Whitespace: we should now have a function name, set an arg limit
+                if token == ' ' or token == '\t':
+                    assert len(fn_args) == 1
+                    arg_limit = fn_arg_limit.get(fn_args[0], 0)
+                    fn_args.append('')
+                # Comma: normal arg
+                elif token == ',':
+                    fn_args.append('')
+                # Variable: recursively parse a sub-expression
+                elif token == '$':
+                    [start, part] = self.parse_atom(expr, j)
+                    fn_args[-1] = Join(fn_args[-1], part)
+                else:
+                    break
+
+                # If we've reached the number of arguments for this function, stop parsing commas
+                if arg_limit and len(fn_args) > arg_limit:
+                    tokens = ('$', expr_closer)
+                # Otherwise, just discard spaces
+                else:
+                    tokens = ('$', expr_closer, ',')
+
+            assert token == ')'
+
+            end = j+1
+
+            name = fn_args.pop(0)
+            name = self.eval(name)
+
+            fn_args = [arg for arg in fn_args if arg]
+            if fn_args and isinstance(fn_args[0], str):
+                fn_args[0] = fn_args[0].lstrip() 
+            fn_args = [self.eval(arg) for arg in fn_args]
+        # No parentheses/braces: just a one-letter variable
+        else:
+            fn_args = []
+            end = i+1
+            name = expr[i+1]
+
+        # Check for substitutions, like $(SRCS:%.c=%.o)
+        subst = None
+        if ':' in name:
+            name, _, subst = name.partition(':')
+            m = re_variable_subst.match(subst)
+            assert m
+            [old, new] = m.groups()
+            if '%' in old:
+                assert old.count('%') == 1
+            else:
+                old = '%' + old
+                new = '%' + new
+            subst = (old, new)
+
+        # Literal $
+        if name == '$':
+            value = '$'
+
+        # Special variables
+        elif name == '@':
+            value = MetaVar('target')
+        elif name == '<':
+            value = UnpackList(MetaVar('rule_deps'))
+
+        # Functions
+        elif name == 'sort':
+            args = ','.join(fn_args).split()
+            value = ' '.join(sorted(set(args)))
+        elif name == 'strip':
+            value = ' '.join(', '.join(fn_args).split())
+        elif name == 'findstring':
+            [pattern, text] = fn_args
+            value = pattern if pattern in text else ''
+        elif name == 'filter':
+            # XXX patterns can use %
+            [pattern, text] = fn_args
+            pattern = pattern.split()
+            value = ' '.join(filter(lambda s: match_filter(s, pattern), text.split()))
+        elif name == 'filter-out':
+            # XXX patterns can use %
+            [pattern, text] = fn_args
+            pattern = pattern.split()
+            value = ' '.join(filter(lambda s: not match_filter(s, pattern), text.split()))
+        elif name == 'addprefix':
+            [prefix, names] = fn_args
+            value = ' '.join(prefix + x for x in names.split())
+        elif name == 'addsuffix':
+            [suffix, names] = fn_args
+            value = ' '.join(x + suffix for x in names.split())
+        elif name == 'subst':
+            [pat, sub, val] = fn_args
+            value = val.replace(pat, sub)
+        elif name == 'notdir':
+            [arg] = fn_args
+            value = ' '.join(os.path.split(v)[1] for v in arg.split())
+        elif name == 'wildcard':
+            [arg] = fn_args
+            value = ' '.join(sorted(glob.glob(arg)))
+        elif name == 'or':
+            for arg in fn_args:
+                if arg:
+                    value = arg
+                    break
+            else:
+                value = ''
+        elif name == 'call':
+            fn = fn_args[0]
+            if fn not in self.variables:
+                self.error('function %r does not exist' % fn)
+            # Create a new variable context with $(1) etc filled in with args
+            old_vars = self.variables
+            self.variables = self.variables.copy()
+            for [i, arg] in enumerate(fn_args):
+                self.variables[str(i)] = arg
+            # Evaluate
+            fn = self.variables.get(fn, '')
+            value = self.eval(fn)
+            self.variables = old_vars
+        elif fn_args:
+            self.error('unknown function %s' % (name,))
+        # Normal variables
+        else:
+            value = Var(name)
+
+        # Wrap expression with a substitution when necessary
+        if subst:
+            (old, new) = subst
+            value = PatSubst(value, old, new)
+
+        return [end, Join(expr_prefix, value)]
+
     def parse_expr(self, expr):
         result = []
+        # Construct the result list
+        start = 0
         while True:
-            # Find the first special character
-            (token, i) = find_first(expr, ('%', '$'))
-            if i is None:
+            [start, atom] = self.parse_atom(expr, start)
+            result.append(atom)
+            if start is None:
                 break
 
-            # Add everything before the dollar to the result list
-            result.append(expr[:i])
-
-            # Translate % into a glob
-            if token == '%':
-                result.append(Glob())
-                expr = expr[i+1:]
-                continue
-
-            assert token == '$'
-
-            # Get the name of the variable/expression being evaluated (single letter or parenthesized)
-            # Also, reset expr to be the remainder of the line for the next loop iteration.
-            if expr[i+1] == '(':
-                j = expr.find(')', i)
-                name = expr[i+2:j]
-                expr = expr[j+1:]
-                # XXX
-                if '$' in name:
-                    self.error('recursive expressions not supported yet')
-            else:
-                name = expr[i+1]
-                expr = expr[i+2:]
-
-            # Check for substitutions, like $(SRCS:%.c=%.o)
-            subst = None
-            if ':' in name:
-                name, _, subst = name.partition(':')
-                m = re_variable_subst.match(subst)
-                assert m
-                [old, new] = m.groups()
-                if '%' in old:
-                    assert old.count('%') == 1
-                else:
-                    old = '%' + old
-                    new = '%' + new
-                subst = (old, new)
-
-            # Literal $
-            if name == '$':
-                value = '$'
-
-            # Special variables
-            elif name == '@':
-                value = MetaVar('target')
-            elif name == '<':
-                value = UnpackList(MetaVar('rule_deps'))
-
-            # Functions
-            elif name.startswith('sort '):
-                value = ' '.join(sorted(set(name[5:].split())))
-            elif name.startswith('strip '):
-                value = name[6:].strip()
-            elif name.startswith('findstring '):
-                (pattern, text) = name[11:].split(',', 1)
-                value = pattern if pattern in text else ''
-            elif name.startswith('filter '):
-                # XXX patterns can use %
-                (pattern, text) = name[7:].split(',', 1)
-                pattern = pattern.split()
-                value = ' '.join(x for x in text.split() if x in pattern)
-            elif name.startswith('filter-out '):
-                # XXX patterns can use %
-                (pattern, text) = name[11:].split(',', 1)
-                pattern = pattern.split()
-                value = ' '.join(x for x in text.split() if x not in pattern)
-            elif name.startswith('addprefix '):
-                (prefix, names) = name[10:].split(',', 1)
-                value = ' '.join(prefix + x for x in names.split())
-            elif name.startswith('addsuffix '):
-                (suffix, names) = name[10:].split(',', 1)
-                value = ' '.join(x + suffix for x in names.split())
-            elif name.startswith('notdir '):
-                value = name[7:]
-                index = value.rfind('/')
-                if index >= 0:
-                    value = value[index+1:]
-            elif name.startswith('wildcard '):
-                value = ' '.join(glob.glob(name[9:]))
-            elif name.startswith('call '):
-                args = name[5:].split(',')
-                fn = args[0]
-                if fn not in self.variables:
-                    self.error('function %r does not exist' % fn)
-                # Create a new variable context with $(1) etc filled in with args
-                old_vars = self.variables
-                self.variables = self.variables.copy()
-                for [i, arg] in enumerate(args):
-                    self.variables[str(i)] = arg
-                # Evaluate
-                value = self.eval(self.variables.get(fn, ''))
-                self.variables = old_vars
-
-            elif name.startswith('or '):
-                for arg in name[3:].split(','):
-                    if arg:
-                        value = arg
-                        break
-                else:
-                    value = ''
-            else:
-                value = Var(name)
-
-            # Wrap expression with a substitution when necessary
-            if subst:
-                (old, new) = subst
-                value = PatSubst(value, old, new)
-
-            result.append(value)
-
-        result.append(expr)
         return Join(*result)
 
     def eval(self, expr):
