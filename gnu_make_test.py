@@ -209,6 +209,9 @@ var = $(call reverse,x,y)''', vars={'var': 'y x'})
 
     # Wildcard test--this depends on the contents of test_files
     test_expr('$(wildcard test_f*/*.c)', 'test_files/a.c test_files/b.c test_files/c.c')
+    test('wildcard after var expansion', '''
+t:=test
+a:=$(wildcard $t_f*/*.c)''', vars={'a': 'test_files/a.c test_files/b.c test_files/c.c'})
 
     print('%s/%s tests passed.' % (PASSES, PASSES + FAILS))
 

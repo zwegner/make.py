@@ -56,6 +56,9 @@ def UnpackList(value):
 def Glob():
     return ('Glob',)
 
+def Wildcard(expr):
+    return ('wildcard', expr)
+
 def Sort(values):
     return ('sort', *values)
 
@@ -273,7 +276,7 @@ class ParseContext:
             value = ' '.join(os.path.split(v)[1] for v in arg.split())
         elif name == 'wildcard':
             [arg] = fn_args
-            value = ' '.join(sorted(glob.glob(arg)))
+            value = Wildcard(arg)
         elif name == 'or':
             for arg in fn_args:
                 if arg:
@@ -340,6 +343,9 @@ class ParseContext:
         elif fn == 'sort':
             args = ','.join(args).split()
             value = ' '.join(sorted(set(args)))
+        elif fn == 'wildcard':
+            [arg] = args
+            value = ' '.join(sorted(glob.glob(arg)))
         else:
             assert 0, fn
         # Recursively evaluate while not fully expanded
