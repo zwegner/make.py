@@ -156,6 +156,7 @@ class ParseContext:
         assert token == '$'
 
         expr_prefix = expr[start:i]
+        subst = None
 
         # Get the name of the variable/expression being evaluated (single letter or parenthesized)
         # Also, reset expr to be the remainder of the line for the next loop iteration.
@@ -166,7 +167,7 @@ class ParseContext:
             expr_closer = ')' if expr[i+1] == '(' else '}'
 
             # For the first match, include whitespace.
-            tokens = ('$', expr_closer, ',', ' ', '\t')
+            tokens = ('$', expr_closer, ':', ',', ' ', '\t')
             # To match make's weird parsing rules, allow a limit to the number of
             # commas that are matched
             arg_limit = 0
@@ -190,15 +191,20 @@ class ParseContext:
                 elif token == '$':
                     [start, part] = self.parse_atom(expr, j)
                     fn_args[-1] = Join(fn_args[-1], part)
+                # Substitutions, like $(SRCS:%.c=%.o)
+                elif token == ':':
+                    fn_args.append(':')
+                    fn_args.append('')
+                    subst = True
                 else:
                     break
 
                 # If we've reached the number of arguments for this function, stop parsing commas
                 if arg_limit and len(fn_args) > arg_limit:
-                    tokens = ('$', expr_closer)
+                    tokens = ('$', expr_closer, ':')
                 # Otherwise, just discard spaces
                 else:
-                    tokens = ('$', expr_closer, ',')
+                    tokens = ('$', expr_closer, ':', ',')
 
             assert token == ')'
 
@@ -211,25 +217,26 @@ class ParseContext:
             if fn_args and isinstance(fn_args[0], str):
                 fn_args[0] = fn_args[0].lstrip() 
             fn_args = [self.eval(arg) for arg in fn_args]
+
+            if subst:
+                index = fn_args.index(':')
+                [pattern] = fn_args[index+1:]
+                del fn_args[index:]
+                m = re_variable_subst.match(pattern)
+                assert m
+                [old, new] = m.groups()
+                if '%' in old:
+                    assert old.count('%') == 1
+                else:
+                    old = '%' + old
+                    new = '%' + new
+                subst = (old, new)
+
         # No parentheses/braces: just a one-letter variable
         else:
             fn_args = []
             end = i+2
             name = expr[i+1]
-
-        # Check for substitutions, like $(SRCS:%.c=%.o)
-        subst = None
-        if ':' in name:
-            name, _, subst = name.partition(':')
-            m = re_variable_subst.match(subst)
-            assert m
-            [old, new] = m.groups()
-            if '%' in old:
-                assert old.count('%') == 1
-            else:
-                old = '%' + old
-                new = '%' + new
-            subst = (old, new)
 
         # Literal $
         if name == '$':
