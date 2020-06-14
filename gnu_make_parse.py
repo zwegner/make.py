@@ -152,13 +152,12 @@ class ParseContext:
 
         assert token == '$'
 
-        expr_prefix = ''
+        expr_prefix = expr[start:i]
 
         # Get the name of the variable/expression being evaluated (single letter or parenthesized)
         # Also, reset expr to be the remainder of the line for the next loop iteration.
         if expr[i+1] in {'(', '{'}:
             fn_args = ['']
-            expr_prefix = expr[start:i]
             start = i + 2
 
             expr_closer = ')' if expr[i+1] == '(' else '}'
@@ -212,7 +211,7 @@ class ParseContext:
         # No parentheses/braces: just a one-letter variable
         else:
             fn_args = []
-            end = i+1
+            end = i+2
             name = expr[i+1]
 
         # Check for substitutions, like $(SRCS:%.c=%.o)
