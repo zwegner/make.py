@@ -211,12 +211,10 @@ class ParseContext:
             end = j+1
 
             name = fn_args.pop(0)
-            name = self.eval(name)
 
             fn_args = [arg for arg in fn_args if arg]
             if fn_args and isinstance(fn_args[0], str):
                 fn_args[0] = fn_args[0].lstrip() 
-            fn_args = [self.eval(arg) for arg in fn_args]
 
             if subst:
                 index = fn_args.index(':')
@@ -257,12 +255,10 @@ class ParseContext:
             [pattern, text] = fn_args
             value = pattern if pattern in text else ''
         elif name == 'filter':
-            # XXX patterns can use %
             [pattern, text] = fn_args
             pattern = pattern.split()
             value = ' '.join(filter(lambda s: match_filter(s, pattern), text.split()))
         elif name == 'filter-out':
-            # XXX patterns can use %
             [pattern, text] = fn_args
             pattern = pattern.split()
             value = ' '.join(filter(lambda s: not match_filter(s, pattern), text.split()))
@@ -334,12 +330,13 @@ class ParseContext:
             return expr
         assert isinstance(expr, tuple)
         [fn, *args] = expr
+        args = [self.eval(arg) for arg in args]
         if fn == 'join':
-            value = ''.join(self.eval(arg) for arg in args)
+            return Join(*args)
         elif fn == 'var':
             [name] = args
             if name not in self.variables:
-                self.warning('variable %r does not exist' % name)
+                self.warning('variable %r does not exist' % (name,))
             value = self.variables.get(name, '')
         elif fn == 'subst':
             [value, old, new] = args

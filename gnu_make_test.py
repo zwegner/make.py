@@ -132,6 +132,16 @@ x := a
 y := $(x) b
 x := c''', vars={'x': 'c', 'y': 'a b'})
 
+    test('double variable expansion', '''
+a := xyz
+b := 123
+c := a
+x = $($(c))
+y := $(x)
+c := b
+z := $(x)
+''', vars={'x': '123', 'y': 'xyz', 'z': '123'})
+
     test('pattern substitution', '''
 x := aa.o    ab.z    ba.o    bb.o
 a := $(x:.o=.c)
@@ -143,6 +153,15 @@ d := $(x:a%.o=a%.c)''', vars={
         'c': 'a.c ab.z ba.o bb.o',
         'd': 'aa.c ab.z ba.o bb.o',
     })
+
+    test('pattern substitution after var expansion', '''
+a_obj := a.o b.o c.o
+b_obj := 1.o 2.o 3.o
+sel := b
+a_c = $($(sel)_obj:.o=.c)
+b_c := $(a_c)
+sel := a
+''', vars={'a_c': 'a.c b.c c.c', 'b_c': '1.c 2.c 3.c'})
 
     test('appending for recursive/simple/undefined vars', '''
 rec = $(base)
