@@ -56,6 +56,9 @@ def UnpackList(value):
 def Glob():
     return ('Glob',)
 
+def Sort(values):
+    return ('sort', *values)
+
 def Subst(value, old, new):
     return ('subst', value, old, new)
 
@@ -238,8 +241,7 @@ class ParseContext:
 
         # Functions
         elif name == 'sort':
-            args = ','.join(fn_args).split()
-            value = ' '.join(sorted(set(args)))
+            value = Sort(fn_args)
         elif name == 'strip':
             value = ' '.join(', '.join(fn_args).split())
         elif name == 'findstring':
@@ -336,6 +338,9 @@ class ParseContext:
         elif fn == 'pat-subst':
             [value, old, new] = args
             value = pat_subst(value, old, new)
+        elif fn == 'sort':
+            args = ','.join(args).split()
+            value = ' '.join(sorted(set(args)))
         else:
             assert 0, fn
         # Recursively evaluate while not fully expanded
