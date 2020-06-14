@@ -8,36 +8,52 @@ import gnu_make_parse
 
 PASSES = FAILS = 0
 
+class TestFailure(Exception): pass
+
+# Wow, what a bunch of horseshit. I want to print the traceback of the caught
+# exception, with all frames up to the root of the stack. The traceback.print_exc()
+# function stops at the caller's frame, which is basically completely useless for
+# us. Apparently this is not very important functionality, as there is a Python
+# bug open since 2006: https://bugs.python.org/issue1553375
+# So anyways, here's a hacky shitty way to get what we want. Maybe there's a better
+# way, but this works, so oh well.
+def get_traceback():
+    frames = [*reversed(list(traceback.walk_stack(None)))]
+    tb = traceback.StackSummary.extract(frames)
+    # Chop the last line, that's the call to this function (gross)
+    return tb.format()[:-1]
+
 def test(*args, **kwargs):
     global PASSES, FAILS
     try:
         inner_test(*args, **kwargs)
         PASSES += 1
-    except Exception:
-        # Wow, what a bunch of horseshit. I want to print the traceback of the caught
-        # exception, with all frames up to the root of the stack. The traceback.print_exc()
-        # function stops at the caller's frame (i.e. here), which is basically completely
-        # useless for us. Apparently this is not very important functionality, as there
-        # is a Python bug open since 2006: https://bugs.python.org/issue1553375
-        # So anyways, here's a hacky shitty way to get what we want. Maybe there's a better
-        # way, but this works, so oh well.
-        [etype, value, tb] = sys.exc_info()
-        frames = [*reversed(list(traceback.walk_stack(None))),
-                *traceback.walk_tb(tb)]
-        tb = traceback.StackSummary.extract(frames)
+    except TestFailure as e:
         print('Traceback (most recent call last):')
-        print(''.join(tb.format()), end='')
-        print('%s: %s' % (etype.__name__, value))
-        print()
+        print(''.join(get_traceback()), end='')
+        print(e)
+        FAILS += 1
+    except Exception:
+        # Format the exception, and insert all the lines above us in the call stack
+        lines = traceback.format_exception(*sys.exc_info())
+        lines[1:1] = get_traceback()
+        print(''.join(lines))
         FAILS += 1
 
-def inner_test(text, vars={}, rules=[]):
+def inner_test(name, text, vars={}, rules=[], enable_warnings=True):
     exp_stderr = None
+
+    def check(msg, value, expected):
+        if value != expected:
+            raise TestFailure(
+                'failure in test "%s", key %s:\n'
+                '  expected: %s\n'
+                '    actual: %s\n' % (name, msg, repr(expected), repr(value)))
 
     # Run the input through gnu_make_parse
     f = io.StringIO(text)
-    ctx = gnu_make_parse.ParseContext(enable_warnings=False)
-    ctx.parse_file(f, 'test-file')
+    ctx = gnu_make_parse.ParseContext(enable_warnings=enable_warnings)
+    ctx.parse_file(f, name)
 
     for [k, v] in sorted(vars.items()):
         value = exc = None
@@ -49,7 +65,8 @@ def inner_test(text, vars={}, rules=[]):
         if isinstance(v, type) and issubclass(v, Exception):
             assert exc is not None and isinstance(exc, v)
         else:
-            assert exc is None and value == v, (k, value)
+            check(k, exc, None)
+            check(k, value, v)
 
     with tempfile.NamedTemporaryFile(mode='wt') as f:
         # Collect input/expected output for make run
@@ -73,30 +90,28 @@ def inner_test(text, vars={}, rules=[]):
         proc = subprocess.run(['make', '-f', f.name], capture_output=True)
 
         exp_stderr = exp_stderr or b'make: *** No targets.  Stop.\n'
-        assert proc.stdout == exp_stdout, (proc.stdout, exp_stdout)
-        assert proc.stderr == exp_stderr, (proc.stderr, exp_stderr)
+        check('stdout', proc.stdout, exp_stdout)
+        check('stderr', proc.stderr, exp_stderr)
 
 # Test a single expression. Add the $(space) variable for convenience
 def test_expr(expr, expected):
-    test('space:=$(nothing) \nz := %s' % expr, vars={'space': ' ', 'z': expected})
+    test('expr', 'nothing:=\nspace:=$(nothing) \nz := %s' % expr, vars={'space': ' ', 'z': expected})
 
 def main():
-    # Last newline gets trimmed from defines
-    test('''define nl
+    test('last newline gets trimmed from defines', '''
+define nl
 
 
 endef''', vars={'nl': '\n'})
 
-    # Space trimming
-    test('''nothing :=
-space := $(nothing) ''', vars={'space': ' '})
+    test('space trimming', '''
+nothing :=
+space := $(nothing) # space after var''', vars={'space': ' '})
 
-    # Spaces in variables
     foo = 'a    b        c    d  '
-    test('foo := %s' % foo, vars={'foo': foo})
+    test('spaces in variables', 'foo := %s' % foo, vars={'foo': foo})
 
-    # Space/comma handling
-    test('''
+    test('special character handling', '''
 nothing :=
 space := $(nothing) # space at eol
 comma := ,
@@ -105,23 +120,19 @@ y := $(subst $(space),$(comma),$(x))
 z := $(subst $(space),$(comma),$(x)  ,,a)# extra args
 ''', vars={'x': 'a b c', 'y': 'a,b,c', 'z': 'a,b,c,,,,a', 'space': ' '})
 
-    # Recursive variable expansion
-    test('''
+    test('recursive variable expansion', '''
 x = $(y)
 y = $(z)
 z = abc''', vars={'x': 'abc'})
 
-    # Detect infinite recursion
-    test('x = $(x)', vars={'x': RecursionError})
+    test('detect infinite recursion', 'x = $(x)', vars={'x': RecursionError})
 
-    # Simple variable expansion
-    test('''
+    test('simple variable expansion', '''
 x := a
 y := $(x) b
 x := c''', vars={'x': 'c', 'y': 'a b'})
 
-    # Pattern substitution
-    test('''
+    test('pattern substitution', '''
 x := aa.o    ab.z    ba.o    bb.o
 a := $(x:.o=.c)
 b := $(x:%.o=%.c)
@@ -133,8 +144,7 @@ d := $(x:a%.o=a%.c)''', vars={
         'd': 'aa.c ab.z ba.o bb.o',
     })
 
-    # Appending, for recursive, simple, and undefined vars
-    test('''
+    test('appending for recursive/simple/undefined vars', '''
 rec = $(base)
 simple := $(base)
 base = abc
@@ -142,10 +152,9 @@ rec += xyz
 simple += xyz
 und += xyz
 # Redef
-''', vars={'rec': 'abc xyz', 'simple': ' xyz', 'und': 'xyz'})
+''', vars={'rec': 'abc xyz', 'simple': ' xyz', 'und': 'xyz'}, enable_warnings=False)
 
-    # Same, but redefine variables in the middle to be the opposite type
-    test('''
+    test('appending with variables switching types', '''
 rec = $(base)
 simple := $(base)
 base = abc
@@ -156,10 +165,9 @@ simple = $(base2)
 base2 = abc
 rec += xyz
 simple += xyz
-''', vars={'rec': ' xyz', 'simple': 'abc xyz'})
+''', vars={'rec': ' xyz', 'simple': 'abc xyz'}, enable_warnings=False)
 
-    # Function calls
-    test('''
+    test('function calls', '''
 reverse = $(2) $(1)
 var = $(call reverse,x,y)''', vars={'var': 'y x'})
 
