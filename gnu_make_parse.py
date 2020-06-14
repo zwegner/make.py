@@ -56,6 +56,9 @@ def UnpackList(value):
 def Glob():
     return ('Glob',)
 
+def Subst(value, old, new):
+    return ('subst', value, old, new)
+
 def PatSubst(value, old, new):
     return ('pat-subst', value, old, new)
 
@@ -120,6 +123,7 @@ fn_arg_limit = {
     'addprefix': 2,
     'addsuffix': 2,
     'subst': 3,
+    'patsubst': 3,
     'notdir': 1,
     'wildcard': 1,
 }
@@ -259,7 +263,10 @@ class ParseContext:
             value = ' '.join(x + suffix for x in names.split())
         elif name == 'subst':
             [pat, sub, val] = fn_args
-            value = val.replace(pat, sub)
+            value = Subst(val, pat, sub)
+        elif name == 'patsubst':
+            [pat, sub, val] = fn_args
+            value = PatSubst(val, pat, sub)
         elif name == 'notdir':
             [arg] = fn_args
             value = ' '.join(os.path.split(v)[1] for v in arg.split())
@@ -323,9 +330,12 @@ class ParseContext:
             if name not in self.variables:
                 self.warning('variable %r does not exist' % name)
             value = self.variables.get(name, '')
+        elif fn == 'subst':
+            [value, old, new] = args
+            value = subst(value, old, new)
         elif fn == 'pat-subst':
             [value, old, new] = args
-            return pat_subst(self.eval(value), old, new)
+            value = pat_subst(value, old, new)
         else:
             assert 0, fn
         # Recursively evaluate while not fully expanded

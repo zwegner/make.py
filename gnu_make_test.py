@@ -194,6 +194,9 @@ var = $(call reverse,x,y)''', vars={'var': 'y x'})
     test_expr('$(subst     {,x,a { {,{)', 'a x x,x')
     test_expr('$(subst     {, x, a { {,{)', ' a  x  x, x')
 
+    test_expr('$(patsubst a%bc, x%yz , abc ab%c a%bc aabc)', ' xyz  ab%c  x%yz   xayz ')
+    test_expr('$(patsubst a%b%c, x%y%z , abc ab%c a%bc xyz)', 'abc  xy%z  a%bc xyz')
+
     test_expr('$(notdir   a  a/b   a/b/c  x,y/z/a,b,c)', 'a b c a,b,c')
 
     # Wildcard test--this depends on the contents of test_files
