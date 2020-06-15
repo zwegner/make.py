@@ -114,7 +114,7 @@ def find_first(s, tokens, start=0):
     return (first_token, first_idx)
 
 class ParseContext:
-    def __init__(self, enable_warnings=True):
+    def __init__(self, enable_warnings=True, root_path='.'):
         self.enable_warnings = enable_warnings
         self.info_stack = []
         self.variables = {'MAKE': 'make'}
@@ -125,6 +125,7 @@ class ParseContext:
         self.else_stack = []
         self.cur_macro = None
         self.cur_macro_lines = None
+        self.root_path = root_path
 
     def parse_atom(self, expr, start=0):
         # Find the first special character
@@ -270,7 +271,9 @@ class ParseContext:
     def eval(self, expr):
         if isinstance(expr, str):
             return expr
-        assert isinstance(expr, tuple)
+        if isinstance(expr, list):
+            return [self.eval(item) for item in expr]
+        assert isinstance(expr, tuple), expr
         [fn, *args] = expr
         args = [self.eval(arg) for arg in args]
         if fn == 'join':
@@ -308,9 +311,15 @@ class ParseContext:
         if self.enable_warnings:
             self.print_message('WARNING', message)
 
+    def split_spaces(self, text):
+        assert isinstance(text, str)
+        s = shlex.shlex(text, punctuation_chars=True, posix=True)
+        return list(s)
+
     def get_norm_path(self, path):
-        assert isinstance(path, str)
-        return os.path.normpath('%s/%s' % (self.root_path, path))
+        if isinstance(path, str):
+            return os.path.normpath('%s/%s' % (self.root_path, path))
+        return Join(self.root_path + '/', path)
 
     def parse_line(self, line):
         line_strip = line.strip()
@@ -373,8 +382,7 @@ class ParseContext:
             self.if_stack.pop()
         elif line.startswith('include ') or line.startswith('-include '):
             if self.if_stack[-1]:
-                # XXX parsing expressions and token splitting needs to be combined!
-                paths = shlex.split(self.parse_and_eval(line[8:].lstrip()))
+                paths = self.split_spaces(self.parse_and_eval(line[8:].lstrip()))
                 for path in paths:
                     include_path = self.get_norm_path(path)
                     if os.path.exists(include_path):
@@ -400,10 +408,9 @@ class ParseContext:
                 if not self.current_rule:
                     self.error('command not inside a rule')
                 if self.if_stack[-1]:
-                    # XXX parsing expressions and token splitting needs to be combined!
                     line = line[1:]
-                    cmd = shlex.split(self.parse_and_eval(line))
-                    self.current_rule.cmds.append(cmd)
+                    
+                    self.current_rule.cmd_lines.append(line)
                 return
             # Otherwise, if we were inside a rule, we're done. Flush the rule and parse
             # this line normally.
@@ -442,10 +449,9 @@ class ParseContext:
                 if m is not None:
                     assert not self.current_rule
                     target, deps = m.groups()
-                    target = self.parse_and_eval(target)
-                    # XXX parsing expressions and token splitting needs to be combined!
-                    deps = shlex.split(deps)
-                    deps = [self.parse_and_eval(dep) for dep in deps]
+                    [target] = self.split_spaces(self.parse_and_eval(target))
+
+                    deps = self.split_spaces(self.parse_and_eval(deps))
                     # Check for order-only deps
                     if '|' in deps:
                         idx = deps.index('|')
@@ -454,7 +460,7 @@ class ParseContext:
                             self.error('multiple | separators in line')
                     else:
                         oo_deps = []
-                    self.current_rule = Rule(target=target, deps=deps, oo_deps=oo_deps, cmds=[])
+                    self.current_rule = Rule(target=target, deps=deps, oo_deps=oo_deps, cmd_lines=[])
                 elif line:
                     self.error('could not parse %r' % line)
 
@@ -523,12 +529,37 @@ class ParseContext:
         rules = []
         for rule in self.rules:
             rule.target = self.get_norm_path(rule.target)
-            rule.deps = shlex.split(rule.deps)
             rule.deps = [self.get_norm_path(dep) for dep in rule.deps]
-            # Ignore - at the beginning of commands
-            rule.cmds = [[cmd[0].lstrip('-')] + cmd[1:] for cmd in rule.cmds]
-            # Ruthlessly remove @echo commands
-            rule.cmds = [cmd for cmd in rule.cmds if cmd[0] != '@echo']
+
+            # Parse and evaluate command lines. Evaluation will substitute all
+            # the local, make-level variables, like say $(SRCS) appearing in
+            # the makefile. Evaluation won't replace metavariables or things
+            # like that, i.e. stuff like $@, $^, globs, etc., which will
+            # generally get replaced by Python code. It's important that we
+            # don't evaluate those constructs now, as they help a lot with rule
+            # deduplication.
+            rule.cmds = []
+            for line in rule.cmd_lines:
+                cmd = self.split_spaces(self.parse_and_eval(line))
+
+                # Check for shell syntax that we can't handle. We should be
+                # more strict really. And when we find it, should pass to 'sh'
+                for token in ['&&', '||', '|', '<', '>']:
+                    if token in cmd:
+                        self.error('unsupported shell syntax in command: '
+                                '%s in %s' % (token, cmd))
+
+                # Split sub-commands by semicolon
+                while ';' in cmd:
+                    idx = cmd.index(';')
+                    rule.cmds.append(cmd[:idx])
+                    cmd = cmd[idx+1:]
+                rule.cmds.append(cmd)
+
+            # Ignore +, -, and @ at the beginning of commands
+            for cmd in enumerate(rule.cmds):
+                if isinstance(cmd[0], str):
+                    cmd[0] = cmd[0].lstrip('+-@')
             if not rule.cmds:
                 continue
             rules.append(rule)
@@ -769,8 +800,8 @@ if __name__ == '__main__':
             help='path to output rules.py file')
     args = parser.parse_args()
 
-    ctx = ParseContext(enable_warnings=args.warnings)
-    ctx.root_path = os.path.dirname(args.file)
+    root_path = os.path.dirname(args.file) or '.'
+    ctx = ParseContext(enable_warnings=args.warnings, root_path=root_path)
     for d in args.defines:
         (k, v) = d.split('=', 1)
         ctx.variables[k] = v
