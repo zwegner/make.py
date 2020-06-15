@@ -198,6 +198,9 @@ var = $(call reverse,x,y)''', vars={'var': 'y x'})
     test_expr('$(addsuffix   a,    x  y   z)', 'xa ya za')
     test_expr('$(addsuffix   a,    x,y,  y,   z)', 'x,y,a y,a za')
 
+    test_expr('$(and ,,,,a)', '')
+    test_expr('$(and ,  , a ,b)', '')
+
     test_expr('$(filter   a  b  ,   a b c   d , a)', 'a b a')
     test_expr('$(filter-out   a  b  , a b c   d , a)', 'c d ,')
     # % is any string. Also make sure other characters are treated literally

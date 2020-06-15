@@ -11,6 +11,14 @@ def addprefix(prefix, names):
 def addsuffix(suffix, names):
     return ' '.join(x + suffix for x in names.split())
 
+def and_(*args):
+    arg = ''
+    for arg in args:
+        arg = arg.strip()
+        if not arg:
+            return arg
+    return arg
+
 # Whether a string matches some patterns, for the $(filter) and $(filter-out) functions
 def _match_filter(s, patterns):
     for pat in patterns:

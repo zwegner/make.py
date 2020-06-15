@@ -191,7 +191,6 @@ class ParseContext:
 
             name = fn_args.pop(0)
 
-            fn_args = [arg for arg in fn_args if arg]
             if fn_args and isinstance(fn_args[0], str):
                 fn_args[0] = fn_args[0].lstrip() 
 
