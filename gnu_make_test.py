@@ -1,4 +1,5 @@
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -191,18 +192,11 @@ reverse = $(2) $(1)
 var = $(call reverse,x,y)''', vars={'var': 'y x'})
 
     # Standard functions
-    test_expr('$(sort   a   b c f e d c)', 'a b c d e f')
-    test_expr('$(sort   a,b   a b a a,b b,a)', 'a a,b b b,a')
-    test_expr('$(sort   a$(space)b  , b$(space)a ,  a$(space)b)', ', a b')
 
-    test_expr('$(strip       x,       )', 'x,')
-    test_expr('$(strip       x,    y   )', 'x, y')
-    test_expr('$(strip       x    y   )', 'x y')
-
-    test_expr('$(findstring   a  ,a)', '')
-    test_expr('$(findstring   a  ,a  )', 'a  ')
-    test_expr('$(findstring   a  ,  a  )', 'a  ')
-    test_expr('$(findstring   a  ,  a  )', 'a  ')
+    test_expr('$(addprefix   a,    x  y   z)', 'ax ay az')
+    test_expr('$(addprefix   a,    x,y,  y,   z)', 'ax,y, ay, az')
+    test_expr('$(addsuffix   a,    x  y   z)', 'xa ya za')
+    test_expr('$(addsuffix   a,    x,y,  y,   z)', 'x,y,a y,a za')
 
     test_expr('$(filter   a  b  ,   a b c   d , a)', 'a b a')
     test_expr('$(filter-out   a  b  , a b c   d , a)', 'c d ,')
@@ -213,18 +207,35 @@ var = $(call reverse,x,y)''', vars={'var': 'y x'})
     test_expr('$(filter-out a* b?, a* b? a b c aa d ba)', 'a b c aa d ba')
     test_expr('$(filter a%b%c, a%b%c ab%c aabcc abc aabbcc axc)', 'a%b%c ab%c')
 
-    test_expr('$(addprefix   a,    x  y   z)', 'ax ay az')
-    test_expr('$(addprefix   a,    x,y,  y,   z)', 'ax,y, ay, az')
-    test_expr('$(addsuffix   a,    x  y   z)', 'xa ya za')
-    test_expr('$(addsuffix   a,    x,y,  y,   z)', 'x,y,a y,a za')
+    test_expr('$(findstring   a  ,a)', '')
+    test_expr('$(findstring   a  ,a  )', 'a  ')
+    test_expr('$(findstring   a  ,  a  )', 'a  ')
+    test_expr('$(findstring   a  ,  a  )', 'a  ')
 
-    test_expr('$(subst     {,x,a { {,{)', 'a x x,x')
-    test_expr('$(subst     {, x, a { {,{)', ' a  x  x, x')
+    test_expr('$(notdir   a  a/b   a/b/c  x,y/z/a,b,c)', 'a b c a,b,c')
+
+    test_expr('$(or ,,,,a,b,c)', 'a')
+    test_expr('$(or ,  , a ,b)', 'a')
 
     test_expr('$(patsubst a%bc, x%yz , abc ab%c a%bc aabc)', ' xyz  ab%c  x%yz   xayz ')
     test_expr('$(patsubst a%b%c, x%y%z , abc ab%c a%bc xyz)', 'abc  xy%z  a%bc xyz')
 
-    test_expr('$(notdir   a  a/b   a/b/c  x,y/z/a,b,c)', 'a b c a,b,c')
+    path = os.path.realpath('test_files/a.c')
+    test_expr('$(realpath test_files/a.c)', path)
+
+    test_expr('$(sort   a   b c f e d c)', 'a b c d e f')
+    test_expr('$(sort   a,b   a b a a,b b,a)', 'a a,b b b,a')
+    test_expr('$(sort   a$(space)b  , b$(space)a ,  a$(space)b)', ', a b')
+
+    test_expr('$(strip       x,       )', 'x,')
+    test_expr('$(strip       x,    y   )', 'x, y')
+    test_expr('$(strip       x    y   )', 'x y')
+    test_expr('$(strip   a,    b,c,  d  , e , f )', 'a, b,c, d , e , f')
+    test_expr('$(strip   a,    b,   c,  d  , e , f )', 'a, b, c, d , e , f')
+    test_expr('$(strip   a,b,   c,  d  , e , f )', 'a,b, c, d , e , f')
+
+    test_expr('$(subst     {,x,a { {,{)', 'a x x,x')
+    test_expr('$(subst     {, x, a { {,{)', ' a  x  x, x')
 
     # Wildcard test--this depends on the contents of test_files
     test_expr('$(wildcard test_f*/*.c)', 'test_files/a.c test_files/b.c test_files/c.c')

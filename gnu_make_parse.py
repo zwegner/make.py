@@ -25,12 +25,13 @@
 import argparse
 import collections
 import glob
+import inspect
 import os
 import re
 import shlex
 import sys
 
-from gnu_make_lib import *
+import gnu_make_lib
 
 # This is fairly restrictive, just to be safe for now
 re_rule = re.compile(r'^((?:[-\w./%$()]|\\ )+):(.*)$')
@@ -56,18 +57,6 @@ def UnpackList(value):
 def Glob():
     return ('Glob',)
 
-def Wildcard(expr):
-    return ('wildcard', expr)
-
-def Sort(values):
-    return ('sort', *values)
-
-def Subst(value, old, new):
-    return ('subst', value, old, new)
-
-def PatSubst(value, old, new):
-    return ('pat-subst', value, old, new)
-
 def Join(*args):
     # Collapse consecutive strings
     r = []
@@ -89,6 +78,24 @@ def Join(*args):
         return r[0]
     return ('join', *r)
 
+# Create a lookup table for library functions
+lib_fns = {}
+fn_arg_limit = {}
+for [name, fn] in gnu_make_lib.__dict__.items():
+    if not name.startswith('_') and callable(fn):
+        # Name ending with _ --> hack to get around Python keywords for stuff like $(or)
+        if name.endswith('_'):
+            name = name.replace('_', '')
+        else:
+            name = name.replace('_', '-')
+        lib_fns[name] = fn
+        argspec = inspect.getfullargspec(fn)
+        assert not argspec.varkw and not argspec.kwonlyargs
+        if argspec.varargs:
+            fn_arg_limit[name] = 0
+        else:
+            fn_arg_limit[name] = len(argspec.args)
+
 # Simple object for storing info on parsed rules. We don't need any functionality really.
 class Rule:
     def __init__(self, **kwargs):
@@ -105,34 +112,6 @@ def find_first(s, tokens, start=0):
             first_idx = idx
             first_token = token
     return (first_token, first_idx)
-
-# Whether a string matches some patterns, for the $(filter) and $(filter-out) functions
-def match_filter(s, patterns):
-    for pat in patterns:
-        # Deal with %, which is the only special character, and only permitted once
-        if '%' in pat:
-            [pre, _, suf] = pat.partition('%')
-            if s.startswith(pre) and s.endswith(suf):
-                return True
-        elif s == pat:
-            return True
-    return False
-
-# Argument length limits per-function. This is a weird hack but it's apparently
-# what's needed to match make.
-fn_arg_limit = {
-    'sort': 1,
-    'strip': 1,
-    'findstring': 2,
-    'filter': 2,
-    'filter-out': 2,
-    'addprefix': 2,
-    'addsuffix': 2,
-    'subst': 3,
-    'patsubst': 3,
-    'notdir': 1,
-    'wildcard': 1,
-}
 
 class ParseContext:
     def __init__(self, enable_warnings=True):
@@ -157,6 +136,7 @@ class ParseContext:
 
         expr_prefix = expr[start:i]
         subst = None
+        arg_limit = 0
 
         # Get the name of the variable/expression being evaluated (single letter or parenthesized)
         # Also, reset expr to be the remainder of the line for the next loop iteration.
@@ -170,7 +150,6 @@ class ParseContext:
             tokens = ('$', expr_closer, ':', ',', ' ', '\t')
             # To match make's weird parsing rules, allow a limit to the number of
             # commas that are matched
-            arg_limit = 0
             while True:
                 (token, j) = find_first(expr, tokens, start=start)
                 if j is None:
@@ -246,47 +225,11 @@ class ParseContext:
         elif name == '<':
             value = UnpackList(MetaVar('rule_deps'))
 
-        # Functions
-        elif name == 'sort':
-            value = Sort(fn_args)
-        elif name == 'strip':
-            value = ' '.join(', '.join(fn_args).split())
-        elif name == 'findstring':
-            [pattern, text] = fn_args
-            value = pattern if pattern in text else ''
-        elif name == 'filter':
-            [pattern, text] = fn_args
-            pattern = pattern.split()
-            value = ' '.join(filter(lambda s: match_filter(s, pattern), text.split()))
-        elif name == 'filter-out':
-            [pattern, text] = fn_args
-            pattern = pattern.split()
-            value = ' '.join(filter(lambda s: not match_filter(s, pattern), text.split()))
-        elif name == 'addprefix':
-            [prefix, names] = fn_args
-            value = ' '.join(prefix + x for x in names.split())
-        elif name == 'addsuffix':
-            [suffix, names] = fn_args
-            value = ' '.join(x + suffix for x in names.split())
-        elif name == 'subst':
-            [pat, sub, val] = fn_args
-            value = Subst(val, pat, sub)
-        elif name == 'patsubst':
-            [pat, sub, val] = fn_args
-            value = PatSubst(val, pat, sub)
-        elif name == 'notdir':
-            [arg] = fn_args
-            value = ' '.join(os.path.split(v)[1] for v in arg.split())
-        elif name == 'wildcard':
-            [arg] = fn_args
-            value = Wildcard(arg)
-        elif name == 'or':
-            for arg in fn_args:
-                if arg:
-                    value = arg
-                    break
-            else:
-                value = ''
+        # Basic library functions
+        elif name in lib_fns:
+            assert arg_limit == 0 or len(fn_args) == arg_limit
+            value = (lib_fns[name], *fn_args)
+
         elif name == 'call':
             fn = fn_args[0]
             if fn not in self.variables:
@@ -301,7 +244,7 @@ class ParseContext:
             value = self.eval(fn)
             self.variables = old_vars
         elif fn_args:
-            self.error('unknown function %s' % (name,))
+            self.error('unknown function %r' % (name,))
         # Normal variables
         else:
             value = Var(name)
@@ -309,7 +252,7 @@ class ParseContext:
         # Wrap expression with a substitution when necessary
         if subst:
             (old, new) = subst
-            value = PatSubst(value, old, new)
+            value = (lib_fns['patsubst'], old, new, value)
 
         return [end, Join(expr_prefix, value)]
 
@@ -338,18 +281,8 @@ class ParseContext:
             if name not in self.variables:
                 self.warning('variable %r does not exist' % (name,))
             value = self.variables.get(name, '')
-        elif fn == 'subst':
-            [value, old, new] = args
-            value = subst(value, old, new)
-        elif fn == 'pat-subst':
-            [value, old, new] = args
-            value = pat_subst(value, old, new)
-        elif fn == 'sort':
-            args = ','.join(args).split()
-            value = ' '.join(sorted(set(args)))
-        elif fn == 'wildcard':
-            [arg] = args
-            value = ' '.join(sorted(glob.glob(arg)))
+        elif callable(fn):
+            value = fn(*args)
         else:
             assert 0, fn
         # Recursively evaluate while not fully expanded
