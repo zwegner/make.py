@@ -247,6 +247,7 @@ var = $(call reverse,x,y)''', vars={'var': 'y x'})
 
     test_expr('$(patsubst a%bc, x%yz , abc ab%c a%bc aabc)', ' xyz  ab%c  x%yz   xayz ')
     test_expr('$(patsubst a%b%c, x%y%z , abc ab%c a%bc xyz)', 'abc  xy%z  a%bc xyz')
+    test_expr('$(patsubst %, a%z, a b c)', ' aaz  abz  acz')
 
     path = os.path.realpath('test_files/a.c')
     test_expr('$(realpath test_files/a.c)', path)

@@ -57,7 +57,7 @@ def patsubst(old, new, s):
     parts = []
     for part in s.split():
         if part.startswith(prefix) and part.endswith(suffix):
-            part = new.replace('%', part[len(prefix):-len(suffix)], 1)
+            part = new.replace('%', part[len(prefix):-len(suffix) or None], 1)
         parts.append(part)
     return ' '.join(parts)
 
