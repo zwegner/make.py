@@ -25,10 +25,19 @@ def get_traceback():
     # Chop the last line, that's the call to this function (gross)
     return tb.format()[:-1]
 
-def test(*args, **kwargs):
+def test(name, text, **kwargs):
     global PASSES, FAILS
+
+    # Check test name against filters
+    if len(sys.argv) > 1:
+        for arg in sys.argv[1:]:
+            if arg in name or (not name and arg in text):
+                break
+        else:
+            return
+
     try:
-        inner_test(*args, **kwargs)
+        inner_test(name, text, **kwargs)
         PASSES += 1
     except TestFailure as e:
         print('Traceback (most recent call last):')
@@ -121,7 +130,7 @@ def inner_test(name, text, vars={}, rules=[], enable_warnings=True):
 
 # Test a single expression. Add the $(space) variable for convenience
 def test_expr(expr, expected):
-    test('expr', 'nothing:=\nspace:=$(nothing) \nz := %s' % expr, vars={'space': ' ', 'z': expected})
+    test('', 'nothing:=\nspace:=$(nothing) \nz := %s' % expr, vars={'space': ' ', 'z': expected})
 
 def main():
     test('last newline gets trimmed from defines', '''
