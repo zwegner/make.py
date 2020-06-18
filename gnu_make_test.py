@@ -59,13 +59,6 @@ def inner_test(name, text, vars={}, rules=[], enable_warnings=True):
                 '  expected: %s\n'
                 '    actual: %s\n' % (name, msg, repr(expected), repr(value)))
 
-    # Run the input through gnu_make_parse
-    f = io.StringIO(text)
-    ctx = gnu_make_parse.ParseContext(enable_warnings=enable_warnings)
-    # Add fake file/line info for any error messages that might happen after parsing
-    ctx.info_stack.append(['test.py', 0])
-    ctx.parse_file(f, name)
-
     # First, write a makefile and compare the output with what we're expecting.
     # We augment the makefile with $(info) calls to print out the values of all
     # variables we're testing. We run make first before comparing our internal
@@ -103,8 +96,15 @@ def inner_test(name, text, vars={}, rules=[], enable_warnings=True):
         targets = [rule['target'] for rule in rules]
         make_cmd = ['make', '--dry-run', '--always-make', '-f', f.name, *targets]
         proc = subprocess.run(make_cmd, capture_output=True)
-        check('stdout', proc.stdout, exp_stdout)
         check('stderr', proc.stderr, exp_stderr)
+        check('stdout', proc.stdout, exp_stdout)
+
+    # Run the input through gnu_make_parse
+    f = io.StringIO(text)
+    ctx = gnu_make_parse.ParseContext(enable_warnings=enable_warnings)
+    # Add fake file/line info for any error messages that might happen after parsing
+    ctx.info_stack.append(['test.py', 0])
+    ctx.parse_file(f, name)
 
     # Make sure our internal eval matches the expected value for each variable
     for [k, v] in sorted(vars.items()):
