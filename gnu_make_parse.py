@@ -391,9 +391,14 @@ class ParseContext:
                         self.error('include file %r does not exist' % include_path)
                     else:
                         self.warning('include file %r does not exist' % include_path)
+        elif line.startswith('$(warning '):
+            assert line.endswith(')')
+            line = self.parse_and_eval(line[10:-1])
+            if self.if_stack[-1]:
+                self.warning(repr(line))
         elif line.startswith('$(error '):
             assert line.endswith(')')
-            line = line[8:-1]
+            line = self.parse_and_eval(line[8:-1])
             if self.if_stack[-1]:
                 self.error(line)
         elif line.startswith('$(eval $('):
