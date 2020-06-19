@@ -22,7 +22,6 @@
 import errno
 import hashlib
 import itertools
-import json
 import multiprocessing
 import os
 import pickle
@@ -216,22 +215,11 @@ class Rule:
     def __repr__(self):
         return '<Rule 0x%x %r>' % (id(self), self.__dict__)
 
-    def to_json(self):
-        return {
-            'targets': self.targets,
-            'deps': self.deps,
-            'cwd': self.cwd,
-            'cmds': self.cmds,
-            'd_file': self.d_file,
-            'order_only_deps': self.order_only_deps,
-            'msvc_show_includes': self.msvc_show_includes,
-            'stdout_filter': self.stdout_filter,
-            'latency': self.latency,
-            'priority': self.priority,
-        }
-
 class BuildContext:
     def __init__(self, vars):
+        # Parse variables passed with the --var option
+        if not isinstance(vars, dict):
+            vars = dict(var.split('=', 1) for var in vars)
         self.vars = vars
 
     def add_rule(self, targets, deps, cmds, d_file=None, order_only_deps=[], msvc_show_includes=False, stdout_filter=None, latency=1):
@@ -408,40 +396,6 @@ def propagate_latencies(target, latency):
     for dep in itertools.chain(deps, rule.order_only_deps):
         propagate_latencies(dep, latency)
 
-def path_strip(prefix, path):
-    if not prefix.endswith('/'):
-        prefix += '/'
-    if path.startswith(prefix):
-        path = path[len(prefix):]
-    return path
-
-# Escape a path for use inside a Makefile. No idea if this is good enough...
-def makefile_esc(path):
-    if ':' in path:
-        print('ERROR: Make cannot handle paths with colons: %r' % path)
-        exit(1)
-    return path.replace('\\', '\\\\').replace(' ', '\\ ')
-
-def rule_to_makefile(fp, rule):
-    # targets
-    target_list = [path_strip(rule.cwd, p) for p in rule.targets]
-    targets = ' '.join(map(makefile_esc, target_list))
-    # deps
-    deps = ' '.join([makefile_esc(path_strip(rule.cwd, p)) for p in rule.deps])
-    # cmds
-    cmd_list = rule.cmds[:]
-    target_dirs = {os.path.dirname(t) for t in target_list}
-    target_dirs.discard('')
-    if target_dirs:
-        # Create target directories
-        cmd_list.insert(0, ['mkdir', '-p'] + list(target_dirs))
-    cmds = '\n\t'.join([' '.join([pipes.quote(arg) for arg in cmd]) for cmd in cmd_list])
-    # recipe
-    fp.write('%s: %s\n\t%s\n\n' % (targets, deps, cmds))
-    # d_file
-    if rule.d_file:
-        fp.write('-include %s\n\n' % (path_strip(rule.cwd, rule.d_file),))
-
 def main():
     # Parse command line
     parser = OptionParser(usage='%prog [options] target1_path [target2_path ...]')
@@ -449,12 +403,9 @@ def main():
     parser.add_option('-f', dest='files', action='append', help='specify the path to a rules.py file (default is "rules.py")', metavar='FILE')
     parser.add_option('-j', dest='jobs', type='int', default=None, help='specify the number of parallel jobs (defaults to one per CPU)')
     parser.add_option('-v', dest='verbose', action='store_true', help='print verbose build output')
-    parser.add_option('--dump-json', dest='dump_json', type='str', metavar='JSON_FILE',
-            help='dump build rules to the given file in JSON format')
     parser.add_option('--var', dest='vars', type='str', action='append', default=[], metavar='KEY=VALUE',
             help='option in the form key=value, sets a variable in the ctx.vars dictionary for passing to rules')
     parser.add_option('--no-parallel', dest='parallel', action='store_false', default=True, help='disable parallel build')
-    parser.add_option('--generate-makefile', dest='generate_makefile', type='str', help='generate a gnu makefile', metavar='MAKEFILE')
     (options, args) = parser.parse_args()
     if options.jobs is None:
         options.jobs = multiprocessing.cpu_count() # default to one job per CPU
@@ -462,8 +413,6 @@ def main():
         options.files = ['rules.py'] # default to "-f rules.py"
     cwd = os.getcwd()
     args = [normpath(joinpath(cwd, x)) for x in args]
-    # Parse variables passed with the --var option
-    variables = {k: v for var in options.vars for k, _, v in [var.partition('=')]}
 
     # Presumably -v should shut off the progress indicator; supporting it w/ --no-parallel seems like extra work for no gain.
     global progress_line, usable_columns
@@ -471,7 +420,7 @@ def main():
     progress_line = usable_columns is not None and not options.verbose and options.parallel
 
     # Set up rule DB, reading in make.db files as we go
-    ctx = BuildContext(variables)
+    ctx = BuildContext(options.vars)
     for f in options.files:
         parse_rules_py(ctx, options, normpath(joinpath(cwd, f)), visited)
     for target in args:
@@ -479,24 +428,6 @@ def main():
             print("ERROR: no rule to build target '%s'" % target)
             exit(1)
         propagate_latencies(target, 0)
-
-    # Generate Makefile
-    if options.generate_makefile:
-        with open(options.generate_makefile, 'wt', encoding='utf-8') as f:
-            f.write('# Automatically generated by make.py from %s\n\n' % (options.files,))
-            for rule in rules.values():
-                rule_to_makefile(f, rule)
-        exit(0)
-
-    if options.dump_json:
-        # rules is a dictionary that can have the same rule as a value under multiple targets,
-        # so make a set
-        all_rules = set(rules.values())
-        all_rules = [rule.to_json() for rule in sorted(all_rules, key=lambda r: tuple(r.targets))]
-        all_rules = {'rules': all_rules}
-        with open(options.dump_json, 'w') as f:
-            json.dump(all_rules, f, sort_keys=True, indent=2)
-        exit(0)
 
     # Clean up stale targets from previous builds that no longer have rules; also do an explicitly requested clean
     for (cwd, db) in make_db.items():
