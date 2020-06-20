@@ -933,23 +933,7 @@ def write_rule(f, rule, indent):
     if rule.succ_list_idx is not None:
         f.write(ind + '_src_list_%s.append(target)\n' % rule.succ_list_idx)
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-d', action='append', dest='defines', default=[], help='set a variable')
-    parser.add_argument('--no-warnings', action='store_false', dest='warnings',
-            help='disable all warnings during generation')
-    parser.add_argument('-f', '--file', help='input file to parse')
-    parser.add_argument('-o', '--output', default='out_rules.py',
-            help='path to output rules.py file')
-    args = parser.parse_args()
-
-    root_path = os.path.dirname(args.file) or '.'
-    ctx = ParseContext(enable_warnings=args.warnings, root_path=root_path)
-    for d in args.defines:
-        (k, v) = d.split('=', 1)
-        ctx.variables[k] = v
-    ctx.parse(args.file)
-
+def convert_rules(ctx, f):
     # Process the parsed rules with a series of cleaning/simplifying/deduplicating steps:
 
     # Normalize paths, parse command lines, remove echos, etc.
@@ -976,64 +960,88 @@ if __name__ == '__main__':
 
     # Read gnu_make_lib.py, the library of functions potentially used at both compile time
     # and run time
+    # XXX use inspect.getsourcelines() and dead code elimination
     base_dir = os.path.dirname(sys.argv[0])
-    with open('%s/gnu_make_lib.py' % base_dir) as f:
-        lib = f.read()
+    with open('%s/gnu_make_lib.py' % base_dir) as lib_f:
+        lib = lib_f.read()
+
+    # Write out the processed rules into the output rules.py file
+    f.write(lib)
+    f.write('\n')
+
+    f.write('def rules(ctx):\n')
+
+    if not rules and not glob_rules:
+        f.write('    pass\n')
+
+    for idx, (cmds, args) in enumerate(args_used_by.items()):
+        f.write('    _vars_%s = %s\n' % (idx, format_list(args, indent=4)))
+
+    for rule in src_lists:
+        f.write('    _src_list_%s = []\n' % rule.pred_list_idx)
+
+    # Write out lists of duplicated rules
+    skip_rules = set()
+    if rule_srcs:
+        dir_mapping = {target_dir: src_dir for target_dir, src_dir in dir_mapping.items()
+            if any(target_dir in target_map for key, target_map in rule_srcs.items())}
+        f.write('    dir_mapping = %s\n' % format_dict(dir_mapping, indent=4, use_repr=True))
+
+        # Find all rules that are used more than once, and write out some for loops to
+        # process all the targets that use the same rule
+        for [i, [key, target_map]] in enumerate(rule_srcs.items()):
+            rule = rule_map[key]
+            skip_rules.add(key)
+            f.write('\n')
+            f.write('    target_map_%s = %s\n' % (i, format_dict(target_map, indent=4, use_repr=True)))
+            f.write('    for [target_dir, targets] in target_map_%s.items():\n' % i)
+            f.write('        src_dir = dir_mapping[target_dir]\n')
+            f.write('        for target_name in targets:\n')
+            f.write('            target = "%s/%s" % (target_dir, target_name)\n')
+            write_rule(f, rule, indent=12)
+
+    # Write out lists of glob rules
+    for [target, glob_rule, matches] in glob_rules:
+        f.write('\n')
+        f.write('    # %s\n' % target)
+        f.write('    matches = %s\n' % format_list(sorted(matches), indent=4))
+        f.write('    for target_glob in matches:\n')
+        f.write('        target = %s\n' % format_expr(glob_rule.sub_target, indent=8))
+        write_rule(f, glob_rule, indent=8)
+
+    # Output all the processed rules
+    for rule in rules:
+        if rule_key(rule) in skip_rules:
+            continue
+
+        f.write('\n')
+        target = os.path.normpath('%s/%s' % (rule.target_dir, rule.target_name))
+        f.write('    # %s\n' % target)
+        f.write('    target = %r\n' % target)
+        if rule.src_dir is not None:
+            f.write('    src_dir = %r\n' % rule.src_dir)
+        write_rule(f, rule, indent=4)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-d', action='append', dest='defines', default=[], help='set a variable')
+    parser.add_argument('--no-warnings', action='store_false', dest='warnings',
+            help='disable all warnings during generation')
+    parser.add_argument('-f', '--file', help='input file to parse')
+    parser.add_argument('-o', '--output', default='out_rules.py',
+            help='path to output rules.py file')
+    args = parser.parse_args()
+
+    root_path = os.path.dirname(args.file) or '.'
+    ctx = ParseContext(enable_warnings=args.warnings, root_path=root_path)
+    for d in args.defines:
+        (k, v) = d.split('=', 1)
+        ctx.variables[k] = v
+    ctx.parse(args.file)
 
     # Write out the processed rules into the output rules.py file
     with open(args.output, 'wt') as f:
-        f.write(lib)
-        f.write('\n')
+        convert_rules(ctx, f)
 
-        f.write('def rules(ctx):\n')
-
-        if not rules and not glob_rules:
-            f.write('    pass\n')
-
-        for idx, (cmds, args) in enumerate(args_used_by.items()):
-            f.write('    _vars_%s = %s\n' % (idx, format_list(args, indent=4)))
-
-        for rule in src_lists:
-            f.write('    _src_list_%s = []\n' % rule.pred_list_idx)
-
-        # Write out lists of duplicated rules
-        skip_rules = set()
-        if rule_srcs:
-            dir_mapping = {target_dir: src_dir for target_dir, src_dir in dir_mapping.items()
-                if any(target_dir in target_map for key, target_map in rule_srcs.items())}
-            f.write('    dir_mapping = %s\n' % format_dict(dir_mapping, indent=4, use_repr=True))
-
-            # Find all rules that are used more than once, and write out some for loops to
-            # process all the targets that use the same rule
-            for [i, [key, target_map]] in enumerate(rule_srcs.items()):
-                rule = rule_map[key]
-                skip_rules.add(key)
-                f.write('\n')
-                f.write('    target_map_%s = %s\n' % (i, format_dict(target_map, indent=4, use_repr=True)))
-                f.write('    for [target_dir, targets] in target_map_%s.items():\n' % i)
-                f.write('        src_dir = dir_mapping[target_dir]\n')
-                f.write('        for target_name in targets:\n')
-                f.write('            target = "%s/%s" % (target_dir, target_name)\n')
-                write_rule(f, rule, indent=12)
-
-        # Write out lists of glob rules
-        for [target, glob_rule, matches] in glob_rules:
-            f.write('\n')
-            f.write('    # %s\n' % target)
-            f.write('    matches = %s\n' % format_list(sorted(matches), indent=4))
-            f.write('    for target_glob in matches:\n')
-            f.write('        target = %s\n' % format_expr(glob_rule.sub_target, indent=8))
-            write_rule(f, glob_rule, indent=8)
-
-        # Output all the processed rules
-        for rule in rules:
-            if rule_key(rule) in skip_rules:
-                continue
-
-            f.write('\n')
-            target = '%s/%s' % (rule.target_dir, rule.target_name)
-            f.write('    # %s\n' % target)
-            f.write('    target = %r\n' % target)
-            if rule.src_dir is not None:
-                f.write('    src_dir = %r\n' % rule.src_dir)
-            write_rule(f, rule, indent=4)
+if __name__ == '__main__':
+    main()

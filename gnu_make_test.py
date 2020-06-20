@@ -52,6 +52,13 @@ def test(name, text, **kwargs):
         print(''.join(lines))
         FAILS += 1
 
+class FakeMakeContext:
+    def __init__(self):
+        self.rules = []
+    def add_rule(self, targets, deps, cmds, **kwargs):
+        # XXX HACK: target/targets
+        self.rules.append(gnu_make_parse.Rule(target=targets, deps=deps, cmds=cmds, **kwargs))
+
 def inner_test(name, text, vars={}, rules=[], enable_warnings=True):
     def check(msg, value, expected):
         if value != expected:
@@ -121,13 +128,34 @@ def inner_test(name, text, vars={}, rules=[], enable_warnings=True):
             check(k, exc, None)
             check(k, value, v)
 
-    # Match rules
-    out_rules = gnu_make_parse.get_finalized_rules(ctx)
-    check('rule len', len(rules), len(out_rules))
-    for [rule, exp] in zip(out_rules, rules):
-        for [k, v] in sorted(exp.items()):
-            value = ctx.eval(getattr(rule, k))
-            check(k, value, v)
+    def check_rules(rules, out_rules):
+        check('rule len', len(rules), len(out_rules))
+        for [rule, exp] in zip(out_rules, rules):
+            for [k, v] in sorted(exp.items()):
+                value = ctx.eval(getattr(rule, k))
+                check(k, value, v)
+
+    # Match rules directly after evaluation
+    check_rules(rules, gnu_make_parse.get_finalized_rules(ctx))
+
+    # Get the full generated rules.py as a string
+    f = io.StringIO()
+    gnu_make_parse.convert_rules(ctx, f)
+    f.seek(0)
+    code = f.read()
+
+    # Execute the generated rules.py with a fake context that just collects rules
+    exec_env = {}
+    exec(code, exec_env)
+    rules_ctx = FakeMakeContext()
+    exec_env['rules'](rules_ctx)
+
+    # Ugh, we can't rely on the order of rules being added with ctx.add_rule() due to
+    # deduplication etc, so sort 'em up
+    out_rules = list(sorted(rules_ctx.rules, key=lambda r: tuple(r.__dict__.items())))
+    rules = list(sorted(rules, key=lambda r: tuple(r.items())))
+
+    check_rules(rules, out_rules)
 
 # Test a single expression. Add the $(space) variable for convenience
 def test_expr(expr, expected):
