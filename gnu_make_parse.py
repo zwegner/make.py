@@ -24,6 +24,8 @@
 
 import argparse
 import collections
+import copy
+import fnmatch
 import glob
 import inspect
 import os
@@ -54,8 +56,8 @@ def Var(value):
 def UnpackList(value):
     return ('unpack', value)
 
-def Glob():
-    return ('Glob',)
+def Glob(expr):
+    return ('glob', expr)
 
 def Join(*args):
     # Collapse consecutive strings
@@ -222,8 +224,8 @@ class ParseContext:
         # Special variables
         elif name == '@':
             value = MetaVar('target')
-        elif name == '<':
-            value = UnpackList(MetaVar('rule_deps'))
+        elif name == '^':
+            value = UnpackList(MetaVar('deps'))
 
         # Basic library functions
         elif name in lib_fns:
@@ -265,26 +267,55 @@ class ParseContext:
             result.append(atom)
             if start is None:
                 break
-
         return Join(*result)
 
-    def eval(self, expr):
+    def eval(self, expr, rule=None):
         if isinstance(expr, str):
             return expr
         if isinstance(expr, list):
-            return [self.eval(item) for item in expr]
+            return [self.eval(item, rule=rule) for item in expr]
         assert isinstance(expr, tuple), expr
         [fn, *args] = expr
-        args = [self.eval(arg) for arg in args]
-        if fn == 'join':
+
+        # Evaluate arguments. Also handle the "unpack" function in the arguments, as
+        # that must be handled in the parent (i.e. here). Ugh
+        new_args = []
+        for arg in args:
+            arg = self.eval(arg, rule=rule)
+            if isinstance(arg, tuple) and arg[0] == 'unpack' and isinstance(arg[1], list):
+                for a in arg[1]:
+                    new_args.append(a)
+                    # XXX HACK! is this always appropriate?
+                    if fn == 'join':
+                        new_args.append(' ')
+            else:
+                new_args.append(arg)
+        args = new_args
+
+        # Library function--only call it when all args are fully evaluated 
+        if callable(fn):
+            if not all(isinstance(arg, str) for arg in args):
+                return expr
+            value = fn(*args)
+        elif fn == 'join':
+            # We'll hope that Join() can simplify this enough. If not, we still return
+            # here, since otherwise we get infinite recursion
             return Join(*args)
         elif fn == 'var':
             [name] = args
             if name not in self.variables:
                 self.warning('variable %r does not exist' % (name,))
             value = self.variables.get(name, '')
-        elif callable(fn):
-            value = fn(*args)
+        elif fn == 'unpack':
+            [arg] = args
+            value = arg
+            return (fn, *args)
+        elif fn == 'metavar':
+            # Only evaluate metavars when given a rule, by looking up the attribute
+            if rule:
+                [attr] = args
+                return getattr(rule, attr)
+            return expr
         else:
             assert 0, fn
         # Recursively evaluate while not fully expanded
@@ -310,11 +341,6 @@ class ParseContext:
     def warning(self, message):
         if self.enable_warnings:
             self.print_message('WARNING', message)
-
-    def split_spaces(self, text):
-        assert isinstance(text, str)
-        s = shlex.shlex(text, punctuation_chars=True, posix=True)
-        return list(s)
 
     def get_norm_path(self, path):
         if isinstance(path, str):
@@ -382,7 +408,7 @@ class ParseContext:
             self.if_stack.pop()
         elif line.startswith('include ') or line.startswith('-include '):
             if self.if_stack[-1]:
-                paths = self.split_spaces(self.parse_and_eval(line[8:].lstrip()))
+                paths = split_spaces(self.parse_and_eval(line[8:].lstrip()))
                 for path in paths:
                     include_path = self.get_norm_path(path)
                     if os.path.exists(include_path):
@@ -415,7 +441,7 @@ class ParseContext:
                 if self.if_stack[-1]:
                     line = line[1:]
                     
-                    self.current_rule.cmd_lines.append(line)
+                    self.current_rule.cmds.append(line)
                 return
             # Otherwise, if we were inside a rule, we're done. Flush the rule and parse
             # this line normally.
@@ -454,9 +480,12 @@ class ParseContext:
                 if m is not None:
                     assert not self.current_rule
                     target, deps = m.groups()
-                    [target] = self.split_spaces(self.parse_and_eval(target))
+                    [target] = split_spaces(self.parse_and_eval(target))
+                    target = parse_globs(target)
 
-                    deps = self.split_spaces(self.parse_and_eval(deps))
+                    deps = split_spaces(self.parse_and_eval(deps))
+                    deps = [parse_globs(dep) for dep in deps]
+
                     # Check for order-only deps
                     if '|' in deps:
                         idx = deps.index('|')
@@ -465,7 +494,7 @@ class ParseContext:
                             self.error('multiple | separators in line')
                     else:
                         oo_deps = []
-                    self.current_rule = Rule(target=target, deps=deps, oo_deps=oo_deps, cmd_lines=[])
+                    self.current_rule = Rule(target=target, deps=deps, oo_deps=oo_deps, cmds=[])
                 elif line:
                     self.error('could not parse %r' % line)
 
@@ -533,42 +562,57 @@ class ParseContext:
     def get_cleaned_rules(self):
         rules = []
         for rule in self.rules:
-            rule.target = self.get_norm_path(rule.target)
-            rule.deps = [self.get_norm_path(dep) for dep in rule.deps]
+            # Create a copy of the target expression with any patterns transformed to use
+            # the 'target_glob' variable
+            rule.sub_target = expand_globs(rule.target, 'target_glob')
 
-            # Parse and evaluate command lines. Evaluation will substitute all
-            # the local, make-level variables, like say $(SRCS) appearing in
-            # the makefile. Evaluation won't replace metavariables or things
-            # like that, i.e. stuff like $@, $^, globs, etc., which will
-            # generally get replaced by Python code. It's important that we
-            # don't evaluate those constructs now, as they help a lot with rule
-            # deduplication.
-            rule.cmds = []
-            for line in rule.cmd_lines:
-                cmd = self.split_spaces(self.parse_and_eval(line))
+            # Evaluate expressions for dependencies, transforming globs as above
+            rule.deps = [expand_globs(dep, 'target_glob') for dep in rule.deps]
 
-                # Check for shell syntax that we can't handle. We should be
-                # more strict really. And when we find it, should pass to 'sh'
-                for token in ['&&', '||', '|', '<', '>']:
-                    if token in cmd:
-                        self.error('unsupported shell syntax in command: '
-                                '%s in %s' % (token, cmd))
-
-                # Split sub-commands by semicolon
-                while ';' in cmd:
-                    idx = cmd.index(';')
-                    rule.cmds.append(cmd[:idx])
-                    cmd = cmd[idx+1:]
-                rule.cmds.append(cmd)
+            # Do an initial evaluation of the command lines. Be sure to pass rule=None
+            # here, which is a weird hacky way of signifying to the evaluation
+            # function that we don't want to substitute variables yet
+            rule.cmds = eval_cmds(self, rule.cmds, rule=None)
 
             # Ignore +, -, and @ at the beginning of commands
             for cmd in enumerate(rule.cmds):
                 if isinstance(cmd[0], str):
                     cmd[0] = cmd[0].lstrip('+-@')
+
             if not rule.cmds:
                 continue
+
             rules.append(rule)
+
         return rules
+
+def split_spaces(text):
+    if not isinstance(text, str):
+        return text
+    # XXX handle escaping exactly as make does
+    return text.split()
+
+def parse_globs(expr):
+    if isinstance(expr, str):
+        result = []
+        for part in [expr]:
+            if isinstance(part, str) and any(token in part for token in ['%', '*']):
+                part = Glob(part)
+            result.append(part)
+        return Join(*result)
+    return expr
+
+# Recursively evaluate a pseudo-AST, replacing usage of globs with a variable substitution
+def expand_globs(expr, glob_var):
+    if not isinstance(expr, tuple):
+        return expr
+    [fn, *args] = expr
+    if fn == 'glob':
+        [pattern] = args
+        [prefix, suffix] = pattern.split('%', 1)
+        return Join(prefix, MetaVar(glob_var), suffix)
+    else:
+        return (fn, *(expand_globs(arg, glob_var) for arg in args))
 
 def format_expr(expr, indent=0):
     if isinstance(expr, str):
@@ -655,6 +699,9 @@ def process_rule_cmds(rules, var_set_idx):
             add_d_file = False
             d_file_path = None
             var_sets_used = set()
+            if not isinstance(cmd, list):
+                new_cmds.append(cmd)
+                continue
             for arg in cmd:
                 # Check for arguments with not-yet-evaluated expressions
                 if not isinstance(arg, str):
@@ -743,14 +790,18 @@ def process_rule_dirs(rules):
             for dep in rule.deps:
                 dep_dir, dep_name = os.path.split(dep)
                 assert dep_dir == src_dir
+                dep = None
                 # Try to put the dep path in terms of the target
                 if '.' in target_name:
                     prefix, _, suffix = target_name.rpartition('.')
                     if dep_name.startswith(prefix):
                         new_suffix = dep_name[len(prefix):]
-                        dep_name = PatSubst(MetaVar('target'), '%' + suffix, '%' + new_suffix)
+                        dep = (gnu_make_lib.patsubst, '%.' + suffix, '%' + new_suffix, MetaVar('target'))
 
-                new_deps.append(Join(MetaVar('src_dir'), '/', dep_name))
+                if dep is None:
+                    dep = Join(MetaVar('src_dir'), '/', dep_name)
+
+                new_deps.append(dep)
 
         rule.target_dir = target_dir
         rule.target_name = target_name
@@ -781,11 +832,91 @@ def deduplicate_rules(rules, dir_mapping, dir_blacklist):
 
     return rule_map, rule_srcs
 
+# Find glob-based targets within rules, and create sets of matching rules
+# based on the dependencies of all rules
+def match_glob_targets(rules):
+    globs = []
+    new_rules = []
+    for rule in rules:
+        # See if this rule has a glob in the target (like %.o: ...)
+        if isinstance(rule.target, tuple) and rule.target[0] == 'glob':
+            [_, target_glob] = rule.target
+            globs.append((target_glob, rule, set()))
+        else:
+            new_rules.append(rule)
+    rules = new_rules
+
+    # For each glob-based rule, see which dependencies match the pattern. If
+    # so, add them to the set of matches
+    for [target_pat, glob_rule, matches] in globs:
+        # Don't support * and % together, let's hope nobody is that crazy
+        assert '*' not in target_pat
+        target_pat = target_pat.replace('%', '*', 1)
+        prefix, _, suffix = target_pat.partition('*')
+
+        for rule in rules:
+            for dep in rule.deps:
+                # XXX fnmatch or fnmatchcase?
+                if isinstance(dep, str) and fnmatch.fnmatchcase(dep, target_pat):
+                    assert dep.startswith(prefix) and dep.endswith(suffix)
+                    glob_value = dep[len(prefix):-len(suffix) or None]
+
+                    matches.add(glob_value)
+
+    return [rules, globs]
+
+# Parse and evaluate a list of command lines. Evaluation will substitute all
+# the local, make-level variables, like say $(SRCS) appearing in the makefile.
+# Evaluation won't replace metavariables or things like that, i.e. stuff like
+# $@, $^, globs, etc., which will generally get replaced by Python code. It's
+# important that we don't evaluate those constructs now, as they help a lot
+# with rule deduplication.
+def eval_cmds(ctx, cmds, rule=None):
+    new_cmds = []
+    for cmd in cmds:
+        if isinstance(cmd, str):
+            cmd = ctx.parse_expr(cmd)
+        if not isinstance(cmd, list):
+            cmd = ctx.eval(cmd, rule=rule)
+        new_cmds.append(cmd)
+
+    return gnu_make_lib._split_cmds(new_cmds)
+
+def get_finalized_rules(ctx):
+    rules = ctx.get_cleaned_rules()
+    [rules, glob_rules] = match_glob_targets(rules)
+
+    all_rules = []
+    # For each rule with a pattern in the target and each file that matches the
+    # pattern, create a sub-rule based on that match (basically filling out a template)
+    for [target, glob_rule, matches] in glob_rules:
+        for match in sorted(matches):
+            # Create a copy of the rule, and set the 'target_glob' variable on it,
+            # which will be used during evaluation for any glob expression
+            # within the rule (via ctx.eval() or eval_cmds() below)
+            rule = copy.copy(glob_rule)
+            rule.target_glob = match
+            # Also replace the target with a concrete instantiation
+            rule.target = target.replace('%', match, 1)
+
+            rule.deps = [ctx.eval(dep, rule=rule) for dep in rule.deps]
+
+            rule.cmds = eval_cmds(ctx, rule.cmds, rule=rule)
+
+            all_rules.append(rule)
+
+    # Do a final eval for all the regular rule commands too
+    for rule in rules:
+        rule.cmds = eval_cmds(ctx, rule.cmds, rule=rule)
+
+    all_rules.extend(rules)
+    return all_rules
+
 def write_rule(f, rule, indent):
     ind = ' ' * indent
-    f.write(ind + 'rule_deps = %s\n' % format_list(rule.deps, indent=indent))
+    f.write(ind + 'deps = %s\n' % format_list(rule.deps, indent=indent))
     if rule.pred_list_idx is not None:
-        f.write(ind + 'rule_deps += _src_list_%s\n' % rule.pred_list_idx)
+        f.write(ind + 'deps += _src_list_%s\n' % rule.pred_list_idx)
     if rule.oo_deps:
         f.write(ind + 'rule_oo_deps = %s\n' % format_list(rule.oo_deps, indent=indent))
         rule_oo_dep_str = ', order_only_deps=rule_oo_deps'
@@ -793,9 +924,12 @@ def write_rule(f, rule, indent):
         rule_oo_dep_str = ''
     f.write(ind + 'rule_cmds = [\n')
     for cmd in rule.cmds:
-        f.write(ind + '    %s,\n' % format_list(cmd, indent=indent+4))
+        f.write(ind + '    %s,\n' % format_expr(cmd, indent=indent+4))
     f.write(ind + ']\n')
-    f.write(ind + 'ctx.add_rule(target, rule_deps, rule_cmds%s)\n' % rule_oo_dep_str)
+    # Weird: do runtime parsing of command lines to split strings by shell syntax
+    if any(not isinstance(cmd, list) for cmd in rule.cmds):
+        f.write(ind + 'rule_cmds = _split_cmds(rule_cmds)\n')
+    f.write(ind + 'ctx.add_rule(target, deps, rule_cmds%s)\n' % rule_oo_dep_str)
     if rule.succ_list_idx is not None:
         f.write(ind + '_src_list_%s.append(target)\n' % rule.succ_list_idx)
 
@@ -830,6 +964,8 @@ if __name__ == '__main__':
     # Find all rules that have outputs used by other rules, to dynamically build dependency lists
     src_lists = process_rule_links(rules)
 
+    rules, glob_rules = match_glob_targets(rules)
+
     # Find patterns with dependency/target directories (for now, just find any directories
     # where every target only depends on files in the same source directory)
     dir_mapping, dir_blacklist = process_rule_dirs(rules)
@@ -850,6 +986,9 @@ if __name__ == '__main__':
         f.write('\n')
 
         f.write('def rules(ctx):\n')
+
+        if not rules and not glob_rules:
+            f.write('    pass\n')
 
         for idx, (cmds, args) in enumerate(args_used_by.items()):
             f.write('    _vars_%s = %s\n' % (idx, format_list(args, indent=4)))
@@ -876,6 +1015,15 @@ if __name__ == '__main__':
                 f.write('        for target_name in targets:\n')
                 f.write('            target = "%s/%s" % (target_dir, target_name)\n')
                 write_rule(f, rule, indent=12)
+
+        # Write out lists of glob rules
+        for [target, glob_rule, matches] in glob_rules:
+            f.write('\n')
+            f.write('    # %s\n' % target)
+            f.write('    matches = %s\n' % format_list(sorted(matches), indent=4))
+            f.write('    for target_glob in matches:\n')
+            f.write('        target = %s\n' % format_expr(glob_rule.sub_target, indent=8))
+            write_rule(f, glob_rule, indent=8)
 
         # Output all the processed rules
         for rule in rules:

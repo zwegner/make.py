@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import io
 import os
 import shlex
@@ -121,7 +122,7 @@ def inner_test(name, text, vars={}, rules=[], enable_warnings=True):
             check(k, value, v)
 
     # Match rules
-    out_rules = ctx.get_cleaned_rules()
+    out_rules = gnu_make_parse.get_finalized_rules(ctx)
     check('rule len', len(rules), len(out_rules))
     for [rule, exp] in zip(out_rules, rules):
         for [k, v] in sorted(exp.items()):
@@ -334,6 +335,26 @@ x := b
 $(eval $(call make_rule,test_files/b))
 x := c
 $(eval $(call make_rule,test_files/c))
+''', rules=rules)
+
+    # Test glob rules
+    rules = []
+    deps = []
+    for base in ['a', 'b', 'c']:
+        f = 'test_files/%s' % base
+        [o_file, c_file] = [f + '.o', f + '.c']
+        deps.append(o_file)
+        rules.append({'target': o_file, 'deps': [c_file],
+            'cmds': [['cc', '-o', o_file, '-c', c_file]]})
+    rules.append({'target': 'exe', 'deps': deps,
+        'cmds': [['cc', '-o', 'exe', *deps]]})
+    test('glob rule', '''
+%.o: %.c
+\tcc -o $@ -c $^
+
+srcs := a b c
+exe: $(patsubst %,test_files/%.o,$(srcs))
+\tcc -o exe $^
 ''', rules=rules)
     print('%s/%s tests passed.' % (PASSES, PASSES + FAILS))
 
