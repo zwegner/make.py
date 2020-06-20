@@ -570,27 +570,31 @@ class ParseContext:
             rules.append(rule)
         return rules
 
-def format_expr(expr):
+def format_expr(expr, indent=0):
     if isinstance(expr, str):
         return repr(expr)
+    elif isinstance(expr, list):
+        return format_list(expr, indent=indent)
     assert isinstance(expr, tuple)
     [fn, *args] = expr
     if fn == 'join':
-        return "''.join(%s)" % ', '.join(format_expr(a) for a in args)
+        return "''.join(%s)" % format_list(args, indent=indent)
     elif fn == 'metavar':
         [var] = args
         return var
     elif fn == 'unpack':
         [value] = args
-        return '*' + format_expr(value)
-    elif fn == 'pat-subst':
-        [value, old, new] = (format_expr(a) for a in args)
-        return 'pat_subst(%s, %s, %s)' % (value, old, new)
+        return '*' + format_expr(value, indent=indent)
+    elif callable(fn):
+        assert inspect.getmodule(fn) == gnu_make_lib
+        args = [format_expr(a, indent=indent) for a in args]
+        return '%s(%s)' % (fn.__name__, ', '.join(args))
     else:
         assert 0, fn
 
 def format_list(items, indent=0):
-    items = [format_expr(item) for item in items]
+    assert isinstance(items, list)
+    items = [format_expr(item, indent=indent) for item in items]
     if sum(len(item)+2 for item in items) + indent < 100:
         return '[%s]' % ', '.join(items)
     indent = ' ' * indent
