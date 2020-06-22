@@ -297,7 +297,7 @@ class ParseContext:
 
         # Library function--only call it when all args are fully evaluated 
         if callable(fn):
-            if not all(isinstance(arg, str) for arg in args):
+            if not all(isinstance(arg, (str, list)) for arg in args):
                 return expr
             value = fn(*args)
         elif fn == 'join':
@@ -622,7 +622,7 @@ def format_expr(expr, indent=0):
         return repr(expr)
     elif isinstance(expr, list):
         return format_list(expr, indent=indent)
-    assert isinstance(expr, tuple)
+    assert isinstance(expr, tuple), expr
     [fn, *args] = expr
     if fn == 'join':
         return "''.join(%s)" % format_list(args, indent=indent)
@@ -668,6 +668,8 @@ def get_args_used_map(rules):
     # code simple).
     args_used = collections.defaultdict(list)
     for rule in rules:
+        if not cmds_are_simplified(rule.cmds):
+            continue
         for idx, cmd in enumerate(rule.cmds):
             for arg in cmd[1:]:
                 # Only allow concrete values as arguments--any unevaluated expression
@@ -697,6 +699,8 @@ def process_rule_cmds(rules, var_set_idx):
     # commands in build rules
     for rule in rules:
         new_cmds = []
+        if not isinstance(rule.cmds, list):
+            continue
         for cmd in rule.cmds:
             nice_cmd = []
             add_d_file = False
@@ -708,7 +712,7 @@ def process_rule_cmds(rules, var_set_idx):
             for arg in cmd:
                 # Check for arguments with not-yet-evaluated expressions
                 if not isinstance(arg, str):
-                    assert isinstance(arg, tuple)
+                    assert isinstance(arg, (tuple, list))
                     nice_cmd.append(arg)
                 # XXX disabled for now
                 #elif arg.startswith('-MT') and arg[3:] == rule.target:
@@ -868,6 +872,9 @@ def match_glob_targets(rules):
 
     return [rules, globs]
 
+def cmds_are_simplified(cmds):
+    return isinstance(cmds, list) and all(isinstance(cmd, list) for cmd in cmds)
+
 # Parse and evaluate a list of command lines. Evaluation will substitute all
 # the local, make-level variables, like say $(SRCS) appearing in the makefile.
 # Evaluation won't replace metavariables or things like that, i.e. stuff like
@@ -876,6 +883,8 @@ def match_glob_targets(rules):
 # with rule deduplication.
 def eval_cmds(ctx, cmds, rule=None):
     new_cmds = []
+    if not isinstance(cmds, list):
+        return cmds
     for cmd in cmds:
         if isinstance(cmd, str):
             cmd = ctx.parse_expr(cmd)
@@ -883,7 +892,9 @@ def eval_cmds(ctx, cmds, rule=None):
             cmd = ctx.eval(cmd, rule=rule)
         new_cmds.append(cmd)
 
-    return gnu_make_lib._split_cmds(new_cmds)
+    if not cmds_are_simplified(new_cmds):
+        new_cmds = (gnu_make_lib._split_cmds, new_cmds)
+    return new_cmds
 
 def finalize_rule(ctx, rule):
     rule.deps = [ctx.eval(dep, rule=rule) for dep in rule.deps]
@@ -927,13 +938,7 @@ def write_rule(f, rule, indent):
         rule_oo_dep_str = ', order_only_deps=rule_oo_deps'
     else:
         rule_oo_dep_str = ''
-    f.write(ind + 'rule_cmds = [\n')
-    for cmd in rule.cmds:
-        f.write(ind + '    %s,\n' % format_expr(cmd, indent=indent+4))
-    f.write(ind + ']\n')
-    # Weird: do runtime parsing of command lines to split strings by shell syntax
-    if any(not isinstance(cmd, list) for cmd in rule.cmds):
-        f.write(ind + 'rule_cmds = _split_cmds(rule_cmds)\n')
+    f.write(ind + 'rule_cmds = %s\n' % format_expr(rule.cmds, indent=indent))
     f.write(ind + 'ctx.add_rule(target, deps, rule_cmds%s)\n' % rule_oo_dep_str)
     if rule.succ_list_idx is not None:
         f.write(ind + '_src_list_%s.append(target)\n' % rule.succ_list_idx)
