@@ -42,6 +42,9 @@ re_variable_assign = re.compile(r'(\w+)\s*(=|:=|\+=|\?=)\s*(.*)')
 
 re_variable_subst = re.compile(r'([.%\w]*)=([.%\w]*)')
 
+def expr_is_fn(expr, fn):
+    return isinstance(expr, tuple) and expr[0] == fn
+
 # A few "classes" for storing unevaluated variables and the like, that are returned
 # from parse_expr(). This gives us a unified representation of strings/variables
 # that can be evaluated either later during parsing or at runtime (i.e. translated
@@ -70,7 +73,7 @@ def Join(*args):
                 r[-1] = r[-1] + arg
             else:
                 r.append(arg)
-        elif isinstance(arg, tuple) and arg[0] == 'join':
+        elif expr_is_fn(arg, 'join'):
             r.extend(arg[1:])
         else:
             r.append(arg)
@@ -254,7 +257,7 @@ class ParseContext:
         # Wrap expression with a substitution when necessary
         if subst:
             (old, new) = subst
-            value = (lib_fns['patsubst'], old, new, value)
+            value = (gnu_make_lib.patsubst, old, new, value)
 
         return [end, Join(expr_prefix, value)]
 
@@ -282,7 +285,7 @@ class ParseContext:
         new_args = []
         for arg in args:
             arg = self.eval(arg, rule=rule)
-            if isinstance(arg, tuple) and arg[0] == 'unpack' and isinstance(arg[1], list):
+            if expr_is_fn(arg, 'unpack') and isinstance(arg[1], list):
                 for a in arg[1]:
                     new_args.append(a)
                     # XXX HACK! is this always appropriate?
@@ -839,7 +842,7 @@ def match_glob_targets(rules):
     new_rules = []
     for rule in rules:
         # See if this rule has a glob in the target (like %.o: ...)
-        if isinstance(rule.target, tuple) and rule.target[0] == 'glob':
+        if expr_is_fn(rule.target, 'glob'):
             [_, target_glob] = rule.target
             globs.append((target_glob, rule, set()))
         else:
@@ -882,6 +885,10 @@ def eval_cmds(ctx, cmds, rule=None):
 
     return gnu_make_lib._split_cmds(new_cmds)
 
+def finalize_rule(ctx, rule):
+    rule.deps = [ctx.eval(dep, rule=rule) for dep in rule.deps]
+    rule.cmds = ctx.eval(rule.cmds, rule=rule)
+
 def get_finalized_rules(ctx):
     rules = ctx.get_cleaned_rules()
     [rules, glob_rules] = match_glob_targets(rules)
@@ -893,21 +900,19 @@ def get_finalized_rules(ctx):
         for match in sorted(matches):
             # Create a copy of the rule, and set the 'target_glob' variable on it,
             # which will be used during evaluation for any glob expression
-            # within the rule (via ctx.eval() or eval_cmds() below)
+            # within the rule (via ctx.eval())
             rule = copy.copy(glob_rule)
             rule.target_glob = match
             # Also replace the target with a concrete instantiation
             rule.target = target.replace('%', match, 1)
 
-            rule.deps = [ctx.eval(dep, rule=rule) for dep in rule.deps]
-
-            rule.cmds = eval_cmds(ctx, rule.cmds, rule=rule)
+            finalize_rule(ctx, rule)
 
             all_rules.append(rule)
 
     # Do a final eval for all the regular rule commands too
     for rule in rules:
-        rule.cmds = eval_cmds(ctx, rule.cmds, rule=rule)
+        finalize_rule(ctx, rule)
 
     all_rules.extend(rules)
     return all_rules
